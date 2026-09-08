@@ -2,13 +2,13 @@
 
 Tracks implementation status against the plan in `project_overview.md`. Updated as work progresses — check the "Last updated" line for freshness.
 
-**Last updated**: 2026-09-07
+**Last updated**: 2026-09-07 (Milestone 1 playback engine redesigned after user found real bugs testing on their own device)
 
 ## Status at a glance
 
 | Milestone | Status |
 |---|---|
-| 1. Data model + MIDI codec + score entry + save/load | Not started |
+| 1. Data model + MIDI codec + score entry + save/load | **Done** |
 | 2. Practice screen (count-in, tempo cue, moving playhead) | Not started |
 | 3. Mic capture + onset detection + scoring + replay | Not started |
 
@@ -25,22 +25,32 @@ Tracks implementation status against the plan in `project_overview.md`. Updated 
 
 ## Milestone 1 — Data model + score entry + save/load
 
-Status: **Not started**
+Status: **Done** (verified on Android emulator; iOS not yet tested)
 
 Scope: create/edit an 8-measure snare rhythm on a tap grid, save to a local `.mid` file, reload it, and play it back audibly to verify correct entry. No mic/detection/scoring yet.
 
-- [ ] `lib/models/rhythm_score.dart` — `RhythmScore`, `Measure`, `Beat` domain model
-- [ ] `lib/services/midi_score_codec.dart` — `RhythmScore` ↔ Standard MIDI File bytes (via `dart_midi_pro`)
-- [ ] `lib/services/score_storage.dart` — save/list/load/delete `.mid` files via `path_provider`
-- [ ] `lib/services/click_sound.dart` — synthesized percussive click, normal/accent gain levels
-- [ ] `lib/services/rhythm_player.dart` — tempo-driven playback scheduler across all 8 measures + current-position stream for UI highlighting
-- [ ] `lib/screens/score_list_screen.dart` — list/create/open saved scores
-- [ ] `lib/screens/score_editor_screen.dart` — 4×4 step-sequencer grid per measure, numbered tab strip (1-8) for navigation, tempo/title fields, Play/Stop (with playing-cell highlight + auto-advancing tab), Save
-- [ ] Remove counter boilerplate from `lib/main.dart`; wire root to `ScoreListScreen`
-- [ ] `pubspec.yaml`: add `dart_midi_pro`, `path_provider`, `audioplayers`
-- [ ] Remove `windows/`, `macos/`, `linux/`, `web/` platform folders
-- [ ] Tests: `RhythmScore` → MIDI → `RhythmScore` round-trip; editor widget test
-- [ ] Manual verification: create/save/reload on device or emulator; confirm `.mid` opens in an external MIDI tool; press Play and confirm audible rhythm matches entry (accents louder, rests silent)
+- [x] `lib/models/rhythm_score.dart` — `RhythmScore`, `Measure`, `Beat` domain model
+- [x] `lib/services/midi_score_codec.dart` — `RhythmScore` ↔ Standard MIDI File bytes (via `dart_midi_pro`)
+- [x] `lib/services/score_storage.dart` — save/list/load/delete `.mid` files via `path_provider`
+- [x] `lib/services/click_sound.dart` — synthesized percussive click, normal/accent gain levels
+- [x] `lib/services/rhythm_player.dart` — tempo-driven playback scheduler across all 8 measures + current-position stream for UI highlighting
+- [x] `lib/screens/score_list_screen.dart` — list/create/open saved scores
+- [x] `lib/screens/score_editor_screen.dart` — 4×4 step-sequencer grid per measure, numbered tab strip (1-8) for navigation, tempo/title fields, Play/Stop (with playing-cell highlight + auto-advancing tab), Save
+- [x] Remove counter boilerplate from `lib/main.dart`; wire root to `ScoreListScreen`
+- [x] `pubspec.yaml`: add `dart_midi_pro`, `path_provider`, `audioplayers`
+- [x] Remove `windows/`, `macos/`, `linux/`, `web/` platform folders
+- [x] Tests: `RhythmScore` → MIDI → `RhythmScore` round-trip; editor widget test — 4/4 passing (`flutter test`), `flutter analyze` clean
+- [x] Manual verification (Android emulator): created an 8-measure rhythm, played it back (correct moving highlight, auto-advancing measure tabs, auto-stop at end), saved, navigated back to the list, reopened, and confirmed title/tempo/pattern all persisted exactly. Pulled the raw `.mid` file off the device and verified it's a well-formed Standard MIDI File byte-for-byte (correct `MThd`/`MTrk`, tempo meta-event = 100 BPM, note-on velocities 110/64 matching accent/normal).
+
+**Playback architecture was redesigned after the user tested on their own device and found real bugs** the automated checks and my own on-device checks had missed:
+1. `PlayerMode.lowLatency` (SoundPool) doesn't support `BytesSource` on Android at all — threw `PlatformException(AndroidAudioError, ...)`. Fixed by using the default `PlayerMode.mediaPlayer`.
+2. Default `ReleaseMode.release` tears down each player's native resources after one playthrough — since the original design reused two long-lived players (retriggered via `seek()`+`resume()`), only the *first* hit on each player could ever work.
+3. Default audio focus is exclusive (`gain`) — every `resume()` call requests focus, and since playback alternated between two players (normal/accent), each stole focus from the other (confirmed via `adb shell dumpsys audio`: `requestAudioFocus()` → `event: handleLoss` → `abandonAudioFocus()` in rapid succession), cutting hits off almost immediately.
+4. **User-reported, and the actual reason #1-3 weren't a full fix**: even after fixing 1-3, a single isolated accent followed by rests produced a spurious echo, and the same pattern sounded different on repeat plays. Root cause: `seek()`+`resume()` are async platform-channel round-trips; when two calls on the same player overlapped in time (plausible whenever retriggers land close together, or a stale call from a previous Play press was still resolving), `audioplayers`' `seek()` — which waits for the *next* `onSeekComplete` event — could have its wait satisfied by the wrong event, firing an extra spurious `resume()`.
+
+**Fix: stopped retriggering clips live entirely.** `rhythm_player.dart` now renders the whole 8-measure sequence to a single linear audio buffer up front (mixing each hit's click waveform into a silent buffer at its exact sample position — the same idea as bouncing a MIDI track to audio), then plays that one buffer once via a single `AudioPlayer`. No retrigger window exists anymore, so the result is deterministic by construction; the playhead highlight is now driven by the player's actual `onPositionChanged` stream instead of a separate Dart-side stopwatch, so it can't drift from the real audio either. Re-verified via `dumpsys audio`: exactly one `MediaPlayer` created per Play press, one continuous playthrough with zero focus-request/handleLoss churn.
+
+**Lesson** (also saved to memory for future sessions): absence of exceptions plus correct UI behavior is not proof that audio plays correctly. Bugs 1-3 were only caught by the user actually listening on real hardware; the `dumpsys audio` technique (watching for focus churn and per-player lifecycle events) turned out to be the fastest objective way to diagnose without needing to hear it myself, and should be the standard check for any future audio-playback change here.
 
 ## Milestone 2 — Practice screen (future)
 

@@ -1,30 +1,56 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:snare_drum_score_app/main.dart';
+import 'package:snare_drum_score_app/models/rhythm_score.dart';
+import 'package:snare_drum_score_app/screens/score_editor_screen.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('Tapping a grid cell cycles rest -> normal -> accent -> rest', (tester) async {
+    final score = RhythmScore.empty(title: 'Widget Test');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ScoreEditorScreen(fileName: 'widget_test_score', initialScore: score),
+      ),
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    final cell = find.byKey(const Key('beat_cell_0'));
+    expect(cell, findsOneWidget);
+    expect(find.text('>'), findsNothing);
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+    await tester.tap(cell); // rest -> normal
+    await tester.pump();
+    expect(find.text('>'), findsNothing);
+
+    await tester.tap(cell); // normal -> accent
+    await tester.pump();
+    expect(find.text('>'), findsOneWidget);
+
+    await tester.tap(cell); // accent -> rest
+    await tester.pump();
+    expect(find.text('>'), findsNothing);
+  });
+
+  testWidgets('Measure tab strip switches the visible measure', (tester) async {
+    final score = RhythmScore.empty(title: 'Widget Test');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ScoreEditorScreen(fileName: 'widget_test_score', initialScore: score),
+      ),
+    );
+
+    // Mark measure 1's first cell, then switch to measure 2 and confirm its
+    // grid starts empty (measures are independent).
+    await tester.tap(find.byKey(const Key('beat_cell_0')));
+    await tester.pump();
+    expect(find.text('>'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('measure_tab_1')));
     await tester.pump();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('beat_cell_0')));
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('beat_cell_0')));
+    await tester.pump();
+    expect(find.text('>'), findsOneWidget);
   });
 }
