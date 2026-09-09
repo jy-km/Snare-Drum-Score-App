@@ -2,20 +2,14 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../models/rhythm_score.dart';
 import 'click_sound.dart';
 
-class PlaybackPosition {
-  final int measureIndex;
-  final int cellIndex;
-
-  const PlaybackPosition(this.measureIndex, this.cellIndex);
-}
-
 /// Plays a [RhythmScore] at a given tempo by rendering the whole sequence to
-/// a single linear audio buffer up front (mixing each hit's click waveform in
-/// at its exact sample position, like bouncing a MIDI track to audio) and
+/// a single linear audio buffer up front (mixing each event's click waveform
+/// in at its exact sample position, like bouncing a MIDI track to audio) and
 /// playing that buffer once.
 ///
 /// An earlier version retriggered two long-lived players live via
@@ -25,67 +19,124 @@ class PlaybackPosition {
 /// spurious extra retriggers when two calls overlapped, and made repeat
 /// playthroughs of the same pattern sound different. Rendering once and
 /// playing back linearly has no retrigger window, so it's deterministic by
-/// construction, and takes tempo as a parameter (not the score's stored
-/// tempo) so Milestone 2 can reuse it with an independent practice tempo.
+/// construction.
+///
+/// [positionStream] reports a continuous fractional "unit position" (e.g.
+/// `4.5` = halfway through the 5th sixteenth-note unit), driven by a local
+/// per-frame clock rather than per-frame native position queries: the audio
+/// player's own reported position is used only to calibrate that local clock
+/// once playback truly starts, and to gently correct drift thereafter — not
+/// as the direct source of each frame's displayed position. This avoids
+/// jitter/latency from repeated platform-channel round-trips and gives a
+/// smoothly moving value suitable for a continuously-moving playhead, rather
+/// than discrete per-note jumps.
 class RhythmPlayer {
   final _player = AudioPlayer(playerId: 'rhythm_player');
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<void>? _completeSubscription;
   bool _isPlaying = false;
 
-  final _positionController = StreamController<PlaybackPosition?>.broadcast();
+  double _msPerUnit = 0;
+  int _totalUnits = 0;
+  DateTime? _anchor;
+  Duration? _lastAcceptedPosition;
+
+  /// Native position reports below this, right after play() starts, are
+  /// treated as "still buffering," not real progress -- confirmed via
+  /// on-device logging that the native player reports position=0 for
+  /// roughly the first ~400ms before real position data arrives. Anchoring
+  /// on one of those zero readings makes the local clock creep out ahead of
+  /// real playback (each stale zero looks like "we're still at the start,
+  /// right now"), which then needs a visible correction jump once real data
+  /// finally arrives.
+  static const _minStartupPosition = Duration(milliseconds: 20);
+
+  final _positionController = StreamController<double?>.broadcast();
 
   bool get isPlaying => _isPlaying;
 
-  Stream<PlaybackPosition?> get positionStream => _positionController.stream;
+  /// Continuous elapsed position in sixteenth-note units, or null when
+  /// stopped.
+  Stream<double?> get positionStream => _positionController.stream;
 
   Future<void> play(RhythmScore score, {int? tempoBpmOverride}) async {
     await stop();
 
     final tempoBpm = tempoBpmOverride ?? score.tempoBpm;
-    final msPerCell = 60000 / tempoBpm / RhythmGrid.subdivisionsPerBeat;
-    final totalCells = score.measures.length * RhythmGrid.cellsPerMeasure;
-    final wavBytes = _renderSequence(score, msPerCell: msPerCell);
+    _msPerUnit = 60000 / tempoBpm / RhythmGrid.subdivisionsPerBeat;
+    _totalUnits = score.measures.length * RhythmGrid.unitsPerMeasure;
+    final wavBytes = _renderSequence(score, msPerUnit: _msPerUnit);
 
     _isPlaying = true;
-    _positionSubscription = _player.onPositionChanged.listen((position) {
-      final cellIndex = (position.inMicroseconds / 1000 / msPerCell)
-          .floor()
-          .clamp(0, totalCells - 1);
-      _positionController.add(
-        PlaybackPosition(
-          cellIndex ~/ RhythmGrid.cellsPerMeasure,
-          cellIndex % RhythmGrid.cellsPerMeasure,
-        ),
-      );
-    });
+    _anchor = null;
+    _lastAcceptedPosition = null;
+
+    _positionSubscription = _player.onPositionChanged.listen(_onPositionSample);
     _completeSubscription = _player.onPlayerComplete.listen((_) => _stopInternal());
 
     await _player.play(BytesSource(wavBytes));
+    SchedulerBinding.instance.scheduleFrameCallback(_onFrame);
   }
 
-  /// Mixes each hit's click samples into a silent buffer at its exact sample
-  /// position, producing one continuous WAV covering the whole score.
-  Uint8List _renderSequence(RhythmScore score, {required double msPerCell}) {
-    final samplesPerCell = (ClickSound.sampleRate * msPerCell / 1000).round();
-    final totalCells = score.measures.length * RhythmGrid.cellsPerMeasure;
+  void _onPositionSample(Duration position) {
+    // We never seek during playback, so position should only move forward.
+    // On-device logging also caught the native player briefly reporting a
+    // position *earlier* than the previous one (a real regression in the
+    // reported value, not just noise) about a second into playback, before
+    // it stabilized. Reject anything that goes backward rather than
+    // correcting toward it.
+    if (_lastAcceptedPosition != null && position < _lastAcceptedPosition!) {
+      return;
+    }
+    _lastAcceptedPosition = position;
+
+    if (_anchor == null) {
+      if (position < _minStartupPosition) return;
+      _anchor = DateTime.now().subtract(position);
+      return;
+    }
+
+    // Gentle correction thereafter, to avoid visible jumps from any single
+    // noisy sample while still preventing long-term drift.
+    final sampleAnchor = DateTime.now().subtract(position);
+    final driftMicros = sampleAnchor.difference(_anchor!).inMicroseconds;
+    _anchor = _anchor!.add(Duration(microseconds: (driftMicros * 0.2).round()));
+  }
+
+  void _onFrame(Duration _) {
+    if (!_isPlaying) return;
+    final anchor = _anchor;
+    if (anchor != null) {
+      final elapsedMs = DateTime.now().difference(anchor).inMicroseconds / 1000.0;
+      final unitPosition = (elapsedMs / _msPerUnit).clamp(0, _totalUnits.toDouble()).toDouble();
+      _positionController.add(unitPosition);
+    }
+    SchedulerBinding.instance.scheduleFrameCallback(_onFrame);
+  }
+
+  /// Mixes each event's click samples into a silent buffer at its exact
+  /// sample position, producing one continuous WAV covering the whole score.
+  Uint8List _renderSequence(RhythmScore score, {required double msPerUnit}) {
+    final samplesPerUnit = (ClickSound.sampleRate * msPerUnit / 1000).round();
+    final totalUnits = score.measures.length * RhythmGrid.unitsPerMeasure;
     final tailLength = ClickSound.normalClickSamples.length;
-    final mixBuffer = Int32List(totalCells * samplesPerCell + tailLength);
+    final mixBuffer = Int32List(totalUnits * samplesPerUnit + tailLength);
 
     for (var measureIndex = 0; measureIndex < score.measures.length; measureIndex++) {
       final measure = score.measures[measureIndex];
-      for (var cellInMeasure = 0; cellInMeasure < measure.beats.length; cellInMeasure++) {
-        final beat = measure.beats[cellInMeasure];
-        if (beat.isRest) continue;
+      var unitCursor = measureIndex * RhythmGrid.unitsPerMeasure;
 
-        final cellIndex = measureIndex * RhythmGrid.cellsPerMeasure + cellInMeasure;
-        final startSample = cellIndex * samplesPerCell;
-        final clickSamples = beat.state == BeatState.accent
-            ? ClickSound.accentClickSamples
-            : ClickSound.normalClickSamples;
-        for (var i = 0; i < clickSamples.length; i++) {
-          mixBuffer[startSample + i] += clickSamples[i];
+      for (final event in measure.events) {
+        if (!event.isRest) {
+          final startSample = unitCursor * samplesPerUnit;
+          final clickSamples = event.type == EventType.accent
+              ? ClickSound.accentClickSamples
+              : ClickSound.normalClickSamples;
+          for (var i = 0; i < clickSamples.length; i++) {
+            mixBuffer[startSample + i] += clickSamples[i];
+          }
         }
+        unitCursor += event.durationUnits;
       }
     }
 
@@ -103,6 +154,8 @@ class RhythmPlayer {
 
   void _stopInternal() {
     _isPlaying = false;
+    _anchor = null;
+    _lastAcceptedPosition = null;
     _positionSubscription?.cancel();
     _completeSubscription?.cancel();
     _positionController.add(null);

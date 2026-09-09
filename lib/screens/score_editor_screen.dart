@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/rhythm_score.dart';
 import '../services/rhythm_player.dart';
 import '../services/score_storage.dart';
+import '../widgets/staff_notation_view.dart';
 
 class ScoreEditorScreen extends StatefulWidget {
   final String fileName;
@@ -29,8 +30,11 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
   late final TextEditingController _tempoController;
 
   int _activeMeasure = 0;
-  PlaybackPosition? _playbackPosition;
-  StreamSubscription<PlaybackPosition?>? _positionSubscription;
+  EventType _selectedType = EventType.normal;
+
+  /// Continuous position across the whole score, in sixteenth-note units.
+  double? _playheadUnits;
+  StreamSubscription<double?>? _positionSubscription;
 
   @override
   void initState() {
@@ -38,10 +42,14 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
     _score = widget.initialScore;
     _titleController = TextEditingController(text: _score.title);
     _tempoController = TextEditingController(text: _score.tempoBpm.toString());
-    _positionSubscription = _player.positionStream.listen((position) {
+    _positionSubscription = _player.positionStream.listen((units) {
       setState(() {
-        _playbackPosition = position;
-        if (position != null) _activeMeasure = position.measureIndex;
+        _playheadUnits = units;
+        if (units != null) {
+          _activeMeasure = (units / RhythmGrid.unitsPerMeasure)
+              .floor()
+              .clamp(0, RhythmGrid.measuresCount - 1);
+        }
       });
     });
   }
@@ -57,14 +65,19 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
 
   int _readTempo() => int.tryParse(_tempoController.text) ?? _score.tempoBpm;
 
-  void _cycleCell(int cellIndex) {
+  void _appendEvent(NoteValue value) {
     setState(() {
       final measure = _score.measures[_activeMeasure];
-      final updatedMeasure = measure.copyWithBeat(
-        cellIndex,
-        measure.beats[cellIndex].next,
-      );
-      _score = _score.copyWithMeasure(_activeMeasure, updatedMeasure);
+      if (!measure.canAppend(value)) return;
+      final updated = measure.appendEvent(RhythmEvent(value, _selectedType));
+      _score = _score.copyWithMeasure(_activeMeasure, updated);
+    });
+  }
+
+  void _backspace() {
+    setState(() {
+      final measure = _score.measures[_activeMeasure];
+      _score = _score.copyWithMeasure(_activeMeasure, measure.removeLast());
     });
   }
 
@@ -93,14 +106,17 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
   @override
   Widget build(BuildContext context) {
     final measure = _score.measures[_activeMeasure];
-    final highlightCell = _playbackPosition != null && _playbackPosition!.measureIndex == _activeMeasure
-        ? _playbackPosition!.cellIndex
+    final measureStartUnits = _activeMeasure * RhythmGrid.unitsPerMeasure;
+    final playheadInMeasure = _playheadUnits != null &&
+            _playheadUnits! >= measureStartUnits &&
+            _playheadUnits! < measureStartUnits + RhythmGrid.unitsPerMeasure
+        ? _playheadUnits! - measureStartUnits
         : null;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Edit Rhythm')),
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
@@ -121,29 +137,69 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               _MeasureTabStrip(
                 activeMeasure: _activeMeasure,
                 onSelect: (index) => setState(() => _activeMeasure = index),
               ),
-              const SizedBox(height: 20),
-              Expanded(
-                child: _BeatGrid(
-                  measure: measure,
-                  highlightCell: highlightCell,
-                  onCellTap: _cycleCell,
-                ),
+              const SizedBox(height: 12),
+              StaffNotationView(
+                measure: measure,
+                playheadUnits: playheadInMeasure,
+                showCursor: !_player.isPlaying,
+              ),
+              const SizedBox(height: 4),
+              Text('${measure.filledUnits}/${RhythmGrid.unitsPerMeasure} units filled'),
+              const SizedBox(height: 12),
+              _TypeSelector(
+                selected: _selectedType,
+                onSelect: (type) => setState(() => _selectedType = type),
               ),
               const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _DurationButton(
+                    keyName: 'duration_quarter',
+                    label: '1/4',
+                    enabled: measure.canAppend(NoteValue.quarter),
+                    onTap: () => _appendEvent(NoteValue.quarter),
+                  ),
+                  const SizedBox(width: 8),
+                  _DurationButton(
+                    keyName: 'duration_eighth',
+                    label: '1/8',
+                    enabled: measure.canAppend(NoteValue.eighth),
+                    onTap: () => _appendEvent(NoteValue.eighth),
+                  ),
+                  const SizedBox(width: 8),
+                  _DurationButton(
+                    keyName: 'duration_sixteenth',
+                    label: '1/16',
+                    enabled: measure.canAppend(NoteValue.sixteenth),
+                    onTap: () => _appendEvent(NoteValue.sixteenth),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    key: const Key('backspace'),
+                    onPressed: measure.events.isEmpty ? null : _backspace,
+                    icon: const Icon(Icons.backspace_outlined),
+                    tooltip: 'Remove last',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
                   ElevatedButton.icon(
+                    key: const Key('play_button'),
                     onPressed: _togglePlay,
                     icon: Icon(_player.isPlaying ? Icons.stop : Icons.play_arrow),
                     label: Text(_player.isPlaying ? 'Stop' : 'Play'),
                   ),
                   ElevatedButton.icon(
+                    key: const Key('save_button'),
                     onPressed: _save,
                     icon: const Icon(Icons.save),
                     label: const Text('Save'),
@@ -189,90 +245,65 @@ class _MeasureTabStrip extends StatelessWidget {
   }
 }
 
-class _BeatGrid extends StatelessWidget {
-  final Measure measure;
-  final int? highlightCell;
-  final ValueChanged<int> onCellTap;
+class _TypeSelector extends StatelessWidget {
+  final EventType selected;
+  final ValueChanged<EventType> onSelect;
 
-  const _BeatGrid({
-    required this.measure,
-    required this.highlightCell,
-    required this.onCellTap,
-  });
-
-  static const double _labelWidth = 20;
-  static const double _cellMargin = 4;
+  const _TypeSelector({required this.selected, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final maxCellWidth = (constraints.maxWidth - _labelWidth - 8) /
-                RhythmGrid.subdivisionsPerBeat -
-            _cellMargin * 2;
-        final maxCellHeight =
-            constraints.maxHeight / RhythmGrid.beatsPerMeasure - _cellMargin * 2;
-        final cellSize = maxCellWidth < maxCellHeight ? maxCellWidth : maxCellHeight;
-
-        return Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(RhythmGrid.beatsPerMeasure, (beatRow) {
-            return Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(width: _labelWidth, child: Text('${beatRow + 1}')),
-                const SizedBox(width: 8),
-                ...List.generate(RhythmGrid.subdivisionsPerBeat, (sub) {
-                  final cellIndex = beatRow * RhythmGrid.subdivisionsPerBeat + sub;
-                  return _buildCell(context, cellIndex, cellSize);
-                }),
-              ],
-            );
-          }),
-        );
-      },
-    );
-  }
-
-  Widget _buildCell(BuildContext context, int cellIndex, double size) {
-    final beat = measure.beats[cellIndex];
-    final isHighlighted = highlightCell == cellIndex;
-
-    return Padding(
-      padding: const EdgeInsets.all(_cellMargin),
-      child: GestureDetector(
-        key: Key('beat_cell_$cellIndex'),
-        onTap: () => onCellTap(cellIndex),
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            color: _cellColor(context, beat.state),
-            border: Border.all(
-              color: isHighlighted ? Colors.orange : Colors.grey,
-              width: isHighlighted ? 3 : 1,
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: EventType.values.map((type) {
+        final isSelected = type == selected;
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: OutlinedButton(
+            key: Key('type_${type.name}'),
+            onPressed: () => onSelect(type),
+            style: OutlinedButton.styleFrom(
+              backgroundColor:
+                  isSelected ? Theme.of(context).colorScheme.primaryContainer : null,
             ),
-            borderRadius: BorderRadius.circular(6),
+            child: Text(_label(type)),
           ),
-          child: beat.state == BeatState.accent
-              ? const Center(
-                  child: Text('>', style: TextStyle(fontWeight: FontWeight.bold)),
-                )
-              : null,
-        ),
-      ),
+        );
+      }).toList(),
     );
   }
 
-  Color? _cellColor(BuildContext context, BeatState state) {
-    final primary = Theme.of(context).colorScheme.primary;
-    switch (state) {
-      case BeatState.rest:
-        return null;
-      case BeatState.normal:
-        return primary.withValues(alpha: 0.5);
-      case BeatState.accent:
-        return primary;
+  String _label(EventType type) {
+    switch (type) {
+      case EventType.rest:
+        return 'Rest';
+      case EventType.normal:
+        return 'Normal';
+      case EventType.accent:
+        return 'Accent';
     }
+  }
+}
+
+class _DurationButton extends StatelessWidget {
+  final String keyName;
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  const _DurationButton({
+    required this.keyName,
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton(
+      key: Key(keyName),
+      onPressed: enabled ? onTap : null,
+      child: Text(label),
+    );
   }
 }

@@ -2,13 +2,14 @@
 
 Tracks implementation status against the plan in `project_overview.md`. Updated as work progresses — check the "Last updated" line for freshness.
 
-**Last updated**: 2026-09-07 (Milestone 1 playback engine redesigned after user found real bugs testing on their own device)
+**Last updated**: 2026-09-09 (Milestone 1.5 complete — confirmed on Pixel 10 after fixing a startup-only playhead stutter)
 
 ## Status at a glance
 
 | Milestone | Status |
 |---|---|
 | 1. Data model + MIDI codec + score entry + save/load | **Done** |
+| 1.5. Real note-value staff notation + audio-synced playhead | **Done** — confirmed on Pixel 10 |
 | 2. Practice screen (count-in, tempo cue, moving playhead) | Not started |
 | 3. Mic capture + onset detection + scoring + replay | Not started |
 
@@ -19,7 +20,7 @@ Tracks implementation status against the plan in `project_overview.md`. Updated 
 - No anti-sharing restriction on saved files (dropped as a requirement).
 - Platforms: Android/iOS only; desktop/web scaffolding to be removed from the repo.
 - MVP note density: single-onset rhythm only; the "8 simultaneous notes" spec deferred to a later phase.
-- Rhythm entry UI: step-sequencer-style tap grid, not notation-style entry. Each measure is a 4×4 grid (4 beats × sixteenth-note subdivisions). Cell tap cycles rest → normal hit → accent → rest (3 states; ghost notes deferred). Navigation between the 8 measures is a numbered tab strip (1-8), not swipe/scroll.
+- ~~Rhythm entry UI: step-sequencer-style tap grid~~ — **superseded by Milestone 1.5**: real staff notation with explicit note values (1/4, 1/8, 1/16), since the tap-grid model had no concept of note duration and wouldn't generalize to pitched notes later. See Milestone 1.5 below.
 - Milestone 1 includes playback of the entered rhythm (Play/Stop button, synthesized click sound, no bundled audio sample to avoid licensing questions) so users can verify entry before Milestone 2's full practice mode exists.
 - Tempo is two distinct concepts: the score's stored **target tempo** (used as-is for Milestone 1's verification playback) and an independently adjustable **practice tempo** (Milestone 2 only — starts below target, increases across attempts). `rhythm_player.dart` takes tempo as a parameter so Milestone 2 can reuse it without rework.
 
@@ -52,11 +53,33 @@ Scope: create/edit an 8-measure snare rhythm on a tap grid, save to a local `.mi
 
 **Lesson** (also saved to memory for future sessions): absence of exceptions plus correct UI behavior is not proof that audio plays correctly. Bugs 1-3 were only caught by the user actually listening on real hardware; the `dumpsys audio` technique (watching for focus churn and per-player lifecycle events) turned out to be the fastest objective way to diagnose without needing to hear it myself, and should be the standard check for any future audio-playback change here.
 
+## Milestone 1.5 — Real note-value staff notation + audio-synced playhead
+
+Status: **Done**, confirmed on a Pixel 10 (real audio/visual sync judgment needs a human watching+listening in real time — screenshots and `dumpsys` can't substitute for that, only rule out gross bugs).
+
+Scope: replaced the 4×4 tap-grid with real staff notation (1/4, 1/8, 1/16 note values, fixed pitch position matching the son's percussion-part convention), and replaced the discrete cell-highlight playhead with a continuously-moving, audio-synced vertical bar. See the plan file for the full design rationale (MuseScore/Sibelius precedent research, why proportional-not-idiomatic spacing was chosen, why the playhead architecture changed).
+
+- [x] `lib/models/rhythm_score.dart` rewritten: `NoteValue` (quarter/eighth/sixteenth), `EventType` (rest/normal/accent), `RhythmEvent` (one duration token), `Measure` now an append-only `List<RhythmEvent>` instead of a fixed 16-slot array
+- [x] `lib/services/midi_score_codec.dart` rewritten: encodes each event's *actual* notated duration as its MIDI note-off span (not a fixed short gate), so the decoder can recover real note values; gaps decode to rest tokens via largest-fit greedy matching
+- [x] Bundled the Bravura SMuFL font (Steinberg, SIL Open Font License) via `curl` from its official GitHub repo — `assets/fonts/Bravura.otf` + `assets/fonts/Bravura-LICENSE.txt`, wired into `pubspec.yaml`
+- [x] `lib/widgets/staff_notation_view.dart` (new): renders one measure as real notation — 5-line staff, treble clef, noteheads always on the fixed "C5" third space, precomposed SMuFL glyphs (single glyph per note = notehead+stem+flag combined, no manual beam/flag drawing needed), duration-proportional spacing so a note's x-position and the playhead's x-position share the exact same formula
+- [x] `lib/screens/score_editor_screen.dart` rewritten: duration selector (1/4|1/8|1/16), type selector (Rest|Normal|Accent), append + backspace buttons (v1 is append-only, no mid-measure editing — confirmed scope with user), staff view replaces the old grid; wrapped body in `SingleChildScrollView` (the old `Spacer()`-based layout overflowed once the staff view's fixed height was added)
+- [x] `lib/services/rhythm_player.dart` rewritten: `_renderSequence` now iterates variable-length events instead of a fixed 16-slot array; **playhead architecture redesigned** — a `Ticker`-driven local clock (via `SchedulerBinding.scheduleFrameCallback`) computes the displayed position every frame from wall-clock time, calibrated once from the first real `onPositionChanged` sample (not the moment `play()` was called, since there's buffering latency before audio is actually audible) and gently corrected against later samples to prevent drift — avoids per-frame platform-channel round-trips entirely, and moves continuously rather than jumping between discrete notes
+- [x] Tests: `midi_score_codec_test.dart` rewritten (round-trip including a fully-complete measure with rests already in largest-fit form, a gap-to-rest-decomposition test — documented that only *complete* measures with rests already in largest-fit form round-trip to an identical event list, since silence alone can't distinguish "how a rest was subdivided" or "intentionally incomplete" from a MIDI file); `widget_test.dart` rewritten for the new duration/type/backspace UI — 7/7 passing, `flutter analyze` clean
+- [x] Manual verification (Android emulator): treble clef + staff rendered correctly; entered accent quarter + 2 normal eighths + quarter rest — correct glyphs (individual flags per note, accent mark, rest symbol), correct proportional spacing, cursor positioned correctly; Play showed continuous smooth playhead motion (confirmed via consecutive frame screenshots) and correct ~19.7s duration for 8 measures at 100 BPM (verified via `dumpsys audio` timestamps, not wall-clock guessing — ADB round-trip overhead makes naive `sleep`-based timing unreliable on this emulator); Save/reload round-tripped correctly, including the expected trailing-rest auto-completion for an originally-incomplete measure
+- [x] Manual verification (Pixel 10, real hardware): staff/clef rendering confirmed on real hardware too; user confirmed audio/visual sync is correct, with a residual "very tiny, almost negligible" unsmoothness at the very start of playback only (see bugs below)
+
+**Two more real bugs found via user testing on the Pixel 10, both isolated to the first ~1 second of playback:**
+1. **Glyph re-layout every frame.** `StaffNotationView`'s `_paintGlyph` created a brand-new `TextPainter` and called `.layout()` (font shaping) on *every* paint call. Playback's every-frame repaint (needed for smooth playhead motion) was redoing that shaping work for every note/rest/clef glyph, every frame — cost scales with how many glyphs are in the visible measure. Fixed by caching each glyph's laid-out `TextPainter` by `(glyph, fontSize)`; there are only a handful of distinct combinations in the whole app, so after the first paint ever, it's a cache hit forever. (This turned out not to be the dominant cause of the reported jank — see #2 — but is a real, worthwhile fix regardless.)
+2. **The actual cause, found via temporary on-device logging** (confirmed with the user that denser-but-later measures were *not* janky, only ever the very start of playback, which ruled out #1 as the primary cause and pointed at something purely time-based): `rhythm_player.dart`'s position calibration was reacting to unreliable native position reports that only occur in roughly the first second after `play()`. Captured directly from the Pixel 10: the native player reports position as exactly `0` for ~400ms while buffering (each zero reading was dragging our calibration anchor forward, causing a visible catch-up jump once real data arrived), and separately, about a second in, one sample briefly *regressed* (637ms → 336ms — a real quirk in native reporting, not noise we introduced), which our correction dutifully followed, causing the displayed position to visibly move backward for a few frames. Fixed in `RhythmPlayer._onPositionSample`: don't calibrate off a reading below `_minStartupPosition` (20ms), and reject any sample that would move position backward (safe since we never seek during playback, so real position can only move forward). User confirmed this fixed it, with only a negligible residual flicker remaining.
+
+**Lesson reinforced**: when a bug report includes "it's worse under condition X," verify that correlation before designing a fix around it — the user's own follow-up correction (a later, denser measure was *not* janky) is what redirected the investigation from "glyph rendering cost" to "startup-only timing issue," which turned out to be the real cause. Capturing actual on-device data (temporary logging + `flutter run`'s console output) beat further speculation.
+
 ## Milestone 2 — Practice screen (future)
 
 Status: **Not started**
 
-Scope: tempo count-in, visual tempo cue, moving playhead bar synced to a scheduled click track, and an independently adjustable practice tempo (distinct from the score's stored target tempo — see Key decisions). No mic/detection — independently testable against Milestone 1's saved scores.
+Scope narrowed by Milestone 1.5, which already delivered the audio-synced moving playhead: tempo count-in, visual tempo cue, and an independently adjustable practice tempo (distinct from the score's stored target tempo — see Key decisions), reusing `rhythm_player.dart`'s existing `tempoBpmOverride` parameter and Ticker-based playhead. No mic/detection — independently testable against saved scores.
 
 - [ ] Not yet broken into tasks — will be detailed when Milestone 1 is done and this becomes current.
 

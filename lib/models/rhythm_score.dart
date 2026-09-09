@@ -1,81 +1,104 @@
 import 'package:flutter/foundation.dart';
 
-/// Fixed grid dimensions for the v1 rhythm editor: 4/4 time, sixteenth-note
-/// resolution, 8 measures.
+/// Fixed grid dimensions: 4/4 time, sixteenth-note resolution, 8 measures.
 class RhythmGrid {
   static const int measuresCount = 8;
   static const int beatsPerMeasure = 4;
   static const int subdivisionsPerBeat = 4;
-  static const int cellsPerMeasure = beatsPerMeasure * subdivisionsPerBeat;
+  static const int unitsPerMeasure = beatsPerMeasure * subdivisionsPerBeat;
 }
 
-enum BeatState { rest, normal, accent }
+enum NoteValue { quarter, eighth, sixteenth }
 
-extension BeatStateVelocity on BeatState {
-  /// MIDI velocity (0-127) representing this state's dynamic.
+extension NoteValueUnits on NoteValue {
+  /// Duration in sixteenth-note units (out of [RhythmGrid.unitsPerMeasure]).
+  int get sixteenthUnits {
+    switch (this) {
+      case NoteValue.quarter:
+        return 4;
+      case NoteValue.eighth:
+        return 2;
+      case NoteValue.sixteenth:
+        return 1;
+    }
+  }
+}
+
+enum EventType { rest, normal, accent }
+
+extension EventTypeVelocity on EventType {
+  /// MIDI velocity (0-127) representing this type's dynamic.
   int get velocity {
     switch (this) {
-      case BeatState.rest:
+      case EventType.rest:
         return 0;
-      case BeatState.normal:
+      case EventType.normal:
         return 64;
-      case BeatState.accent:
+      case EventType.accent:
         return 110;
     }
   }
 }
 
-class Beat {
-  final BeatState state;
+/// One rhythmic token: a note or rest of a given [value] (duration).
+class RhythmEvent {
+  final NoteValue value;
+  final EventType type;
 
-  const Beat(this.state);
+  const RhythmEvent(this.value, this.type);
 
-  static const rest = Beat(BeatState.rest);
+  int get durationUnits => value.sixteenthUnits;
 
-  bool get isRest => state == BeatState.rest;
+  bool get isRest => type == EventType.rest;
 
-  int get velocity => state.velocity;
-
-  /// Cycles rest -> normal -> accent -> rest, matching the tap-grid entry UI.
-  Beat get next {
-    switch (state) {
-      case BeatState.rest:
-        return const Beat(BeatState.normal);
-      case BeatState.normal:
-        return const Beat(BeatState.accent);
-      case BeatState.accent:
-        return const Beat(BeatState.rest);
-    }
-  }
+  int get velocity => type.velocity;
 
   @override
-  bool operator ==(Object other) => other is Beat && other.state == state;
+  bool operator ==(Object other) =>
+      other is RhythmEvent && other.value == value && other.type == type;
 
   @override
-  int get hashCode => state.hashCode;
+  int get hashCode => Object.hash(value, type);
 }
 
+/// A measure built by appending [RhythmEvent]s left to right (append-only
+/// entry for v1). Always filled to at most [RhythmGrid.unitsPerMeasure];
+/// never overfilled.
 class Measure {
-  final List<Beat> beats;
+  final List<RhythmEvent> events;
 
-  Measure(this.beats) : assert(beats.length == RhythmGrid.cellsPerMeasure);
+  Measure(this.events)
+      : assert(_totalUnits(events) <= RhythmGrid.unitsPerMeasure);
 
-  factory Measure.empty() => Measure(
-        List.generate(RhythmGrid.cellsPerMeasure, (_) => Beat.rest),
-      );
+  factory Measure.empty() => Measure(const []);
 
-  Measure copyWithBeat(int cellIndex, Beat beat) {
-    final updated = List<Beat>.of(beats);
-    updated[cellIndex] = beat;
-    return Measure(updated);
+  static int _totalUnits(List<RhythmEvent> events) =>
+      events.fold(0, (sum, e) => sum + e.durationUnits);
+
+  int get filledUnits => _totalUnits(events);
+
+  int get remainingUnits => RhythmGrid.unitsPerMeasure - filledUnits;
+
+  bool get isComplete => remainingUnits == 0;
+
+  bool canAppend(NoteValue value) => value.sixteenthUnits <= remainingUnits;
+
+  Measure appendEvent(RhythmEvent event) {
+    assert(canAppend(event.value));
+    return Measure([...events, event]);
+  }
+
+  Measure removeLast() {
+    if (events.isEmpty) return this;
+    return Measure(events.sublist(0, events.length - 1));
   }
 
   @override
   bool operator ==(Object other) =>
-      other is Measure && listEquals(other.beats, beats);
+      other is Measure && listEquals(other.events, events);
 
   @override
-  int get hashCode => Object.hashAll(beats);
+  int get hashCode => Object.hashAll(events);
 }
 
 class RhythmScore {
