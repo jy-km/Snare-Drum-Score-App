@@ -28,3 +28,7 @@ Standard Flutter CLI, run from the repo root.
 
 - Dart SDK constraint: `^3.13.2` (see `pubspec.yaml`)
 - No state management, routing, or networking packages are added yet — only `cupertino_icons` beyond the Flutter SDK itself.
+
+## Project progress
+
+Whenever a new session start, read project_overview.md to understand what this project is about. And check project_progress.md to know the current status. Whenever there is a meaningful progress, update project_progress.md.

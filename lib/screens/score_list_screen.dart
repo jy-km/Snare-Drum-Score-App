@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/rhythm_score.dart';
 import '../services/score_storage.dart';
+import 'practice_screen.dart';
 import 'score_editor_screen.dart';
 
 class ScoreListScreen extends StatefulWidget {
@@ -55,6 +56,14 @@ class _ScoreListScreenState extends State<ScoreListScreen> {
     if (mounted) _refresh();
   }
 
+  Future<void> _openPractice(String fileName) async {
+    final score = await _storage.load(fileName);
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => PracticeScreen(score: score)),
+    );
+  }
+
   Future<String?> _promptForTitle() {
     final controller = TextEditingController();
     return showDialog<String>(
@@ -103,7 +112,40 @@ class _ScoreListScreenState extends State<ScoreListScreen> {
             itemCount: names.length,
             itemBuilder: (context, index) {
               final name = names[index];
-              return ListTile(title: Text(name), onTap: () => _open(name));
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name, style: Theme.of(context).textTheme.titleMedium),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              key: Key('edit_$name'),
+                              onPressed: () => _open(name),
+                              icon: const Icon(Icons.edit_outlined),
+                              label: const Text('Edit'),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              key: Key('practice_$name'),
+                              onPressed: () => _openPractice(name),
+                              icon: const Icon(Icons.play_arrow),
+                              label: const Text('Practice'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              );
             },
           );
         },
