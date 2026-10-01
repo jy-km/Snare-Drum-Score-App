@@ -9,7 +9,7 @@ void main() {
 
     // Measure 1: accent quarter, normal eighth, normal eighth, eighth rest,
     // accent sixteenth, quarter rest, sixteenth rest
-    // (4+2+2+2+1+4+1 = 16 units -- a complete measure).
+    // (12+6+6+6+3+12+3 = 48 units -- a complete measure).
     // Rests aren't encoded as MIDI events at all -- only a gap's total
     // silent duration survives the
     // round-trip, reconstructed using the largest-fitting rest tokens first.
@@ -61,9 +61,9 @@ void main() {
   });
 
   test('A gap decodes to the largest-fitting rest values', () {
-    // A lone sixteenth note at the very start of a measure leaves a 15-unit
+    // A lone sixteenth note at the very start of a measure leaves a 45-unit
     // gap, which should decode as quarter+quarter+quarter+eighth+sixteenth
-    // rests (4+4+4+2+1 = 15), the greedy largest-fit breakdown.
+    // rests (12+12+12+6+3 = 45), the greedy largest-fit breakdown.
     var score = RhythmScore.empty();
     var measure0 = Measure.empty();
     measure0 = measure0.appendEvent(const RhythmEvent(NoteValue.sixteenth, EventType.normal));
@@ -83,5 +83,135 @@ void main() {
         RhythmEvent(NoteValue.sixteenth, EventType.rest),
       ]),
     );
+  });
+
+  test('Eighth-note triplets round-trip through MIDI bytes', () {
+    var score = RhythmScore.empty(title: 'Triplets');
+
+    // Beat 1: a full triplet. Beat 2: two triplet rests, then the last
+    // triplet note -- an 8-unit gap that only two triplet rests can fill (an
+    // eighth rest would strand 2 units). Beat 3: triplet note, then two
+    // triplet rests. Beat 4: two eighths.
+    const events = [
+      RhythmEvent(NoteValue.eighthTriplet, EventType.accent),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.normal),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.normal),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.rest),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.rest),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.normal),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.accent),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.rest),
+      RhythmEvent(NoteValue.eighthTriplet, EventType.rest),
+      RhythmEvent(NoteValue.eighth, EventType.normal),
+      RhythmEvent(NoteValue.eighth, EventType.normal),
+    ];
+    var measure0 = Measure.empty();
+    for (final event in events) {
+      measure0 = measure0.appendEvent(event);
+    }
+    expect(measure0.isComplete, isTrue);
+    score = score.copyWithMeasure(0, measure0);
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.measures[0], equals(measure0));
+  });
+
+  test('A lone triplet note decodes with its group and measure completed by rests', () {
+    var score = RhythmScore.empty();
+    score = score.copyWithMeasure(
+      0,
+      Measure.empty().appendEvent(const RhythmEvent(NoteValue.eighthTriplet, EventType.normal)),
+    );
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(
+      decoded.measures[0].events,
+      equals(const [
+        RhythmEvent(NoteValue.eighthTriplet, EventType.normal),
+        RhythmEvent(NoteValue.eighthTriplet, EventType.rest),
+        RhythmEvent(NoteValue.eighthTriplet, EventType.rest),
+        RhythmEvent(NoteValue.quarter, EventType.rest),
+        RhythmEvent(NoteValue.quarter, EventType.rest),
+        RhythmEvent(NoteValue.quarter, EventType.rest),
+      ]),
+    );
+  });
+
+  test('A non-4/4 meter round-trips through MIDI bytes', () {
+    var score = RhythmScore.empty(title: 'Seven Four', beatsPerMeasure: 7);
+    expect(score.unitsPerMeasure, equals(84));
+
+    var measure0 = Measure.empty();
+    for (var i = 0; i < 7; i++) {
+      measure0 = measure0.appendEvent(
+        const RhythmEvent(NoteValue.quarter, EventType.normal),
+        score.unitsPerMeasure,
+      );
+    }
+    score = score.copyWithMeasure(0, measure0);
+
+    final bytes = MidiScoreCodec.encode(score);
+    final decoded = MidiScoreCodec.decode(bytes);
+
+    expect(decoded.beatsPerMeasure, equals(7));
+    expect(decoded.measures[0], equals(measure0));
+  });
+
+  test('A half-note-beat meter (3/2) round-trips through MIDI bytes', () {
+    var score = RhythmScore.empty(title: 'Three Two', beatsPerMeasure: 3, beatUnit: 2);
+    // 3 beats * 24 units per half-note beat = 72.
+    expect(score.unitsPerMeasure, equals(72));
+
+    var measure0 = Measure.empty();
+    for (var i = 0; i < 6; i++) {
+      measure0 = measure0.appendEvent(
+        const RhythmEvent(NoteValue.quarter, EventType.normal),
+        score.unitsPerMeasure,
+      );
+    }
+    score = score.copyWithMeasure(0, measure0);
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.beatsPerMeasure, equals(3));
+    expect(decoded.beatUnit, equals(2));
+    expect(decoded.measures[0], equals(measure0));
+  });
+
+  test('Instrument round-trips through MIDI bytes', () {
+    var score = RhythmScore.empty(title: 'Kick Test', instrument: Instrument.kick);
+    var measure0 = Measure.empty();
+    measure0 = measure0.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.accent));
+    score = score.copyWithMeasure(0, measure0);
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.instrument, equals(Instrument.kick));
+  });
+
+  test('Empty score defaults to the snare instrument on decode', () {
+    final score = RhythmScore.empty(title: 'No Notes');
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.instrument, equals(Instrument.snare));
+  });
+
+  test('A score grown beyond the starting 8 measures round-trips its full length', () {
+    var score = RhythmScore.empty(title: 'Long Piece', measuresCount: 8);
+    for (var i = 0; i < 3; i++) {
+      score = score.appendMeasure();
+    }
+    expect(score.measures.length, equals(11));
+
+    var lastMeasure = Measure.empty();
+    lastMeasure = lastMeasure.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.accent));
+    score = score.copyWithMeasure(10, lastMeasure);
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.measures.length, equals(11));
+    expect(decoded.measures[10].events.first, equals(lastMeasure.events.first));
   });
 }

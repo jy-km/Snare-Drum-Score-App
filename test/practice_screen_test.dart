@@ -53,7 +53,7 @@ void main() {
   testWidgets(
       'Starting counts in, then transitions into Measure 1 and refreshes a slot 2 measures ahead',
       (tester) async {
-    // At 60 BPM: 250ms/unit, count-in measure = 4s, 9-measure timeline = 36s total.
+    // At 60 BPM: 1s/quarter note, count-in measure = 4s, 9-measure timeline = 36s total.
     await pumpPractice(tester, tempoBpm: 60);
 
     await tapButton(tester, const Key('practice_start_button'));
@@ -103,5 +103,45 @@ void main() {
     await tester.pump();
     expect(find.text('Ready'), findsOneWidget);
     expect(find.text('Count-in'), findsOneWidget);
+  });
+
+  testWidgets('Rhythm sound toggle defaults off, is togglable while idle, and locks while running',
+      (tester) async {
+    await pumpPractice(tester);
+
+    final toggleFinder = find.byKey(const Key('practice_rhythm_sound_toggle'));
+    expect(tester.widget<SwitchListTile>(toggleFinder).value, isFalse);
+
+    await tester.tap(toggleFinder);
+    await tester.pump();
+    expect(tester.widget<SwitchListTile>(toggleFinder).value, isTrue);
+
+    await tapButton(tester, const Key('practice_start_button'));
+    await tester.pump();
+    expect(tester.widget<SwitchListTile>(toggleFinder).onChanged, isNull);
+  });
+
+  testWidgets('A half-note-beat meter (3/2) keeps the count-in the same length as a real measure',
+      (tester) async {
+    // 3 half-note beats * 2s per half note (60 BPM) = 6s. A beat-unit bug
+    // that spaced count-in clicks as if every beat were a quarter note would
+    // finish the count-in after only 3s.
+    final score = RhythmScore.empty(
+      title: 'Three Two Practice',
+      tempoBpm: 60,
+      beatsPerMeasure: 3,
+      beatUnit: 2,
+    );
+    await tester.pumpWidget(MaterialApp(home: PracticeScreen(score: score)));
+
+    await tapButton(tester, const Key('practice_start_button'));
+    await tester.pump();
+    await tester.pump(fallbackDelay);
+
+    await tester.pump(const Duration(milliseconds: 5500));
+    expect(find.text('Get ready...'), findsOneWidget, reason: 'count-in should not be done yet');
+
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(find.text('Playing'), findsOneWidget);
   });
 }

@@ -22,7 +22,7 @@ import 'click_sound.dart';
 /// construction.
 ///
 /// [positionStream] reports a continuous fractional "unit position" (e.g.
-/// `4.5` = halfway through the 5th sixteenth-note unit), driven by a local
+/// `4.5` = halfway through the 5th `RhythmGrid` unit), driven by a local
 /// per-frame clock rather than per-frame native position queries: the audio
 /// player's own reported position is used only to calibrate that local clock
 /// once playback truly starts, and to gently correct drift thereafter — not
@@ -55,7 +55,7 @@ class RhythmPlayer {
 
   bool get isPlaying => _isPlaying;
 
-  /// Continuous elapsed position in sixteenth-note units, or null when
+  /// Continuous elapsed position in `RhythmGrid` units, or null when
   /// stopped.
   Stream<double?> get positionStream => _positionController.stream;
 
@@ -63,9 +63,16 @@ class RhythmPlayer {
     await stop();
 
     final tempoBpm = tempoBpmOverride ?? score.tempoBpm;
-    _msPerUnit = 60000 / tempoBpm / RhythmGrid.subdivisionsPerBeat;
-    _totalUnits = score.measures.length * RhythmGrid.unitsPerMeasure;
-    final wavBytes = _renderSequence(score, msPerUnit: _msPerUnit);
+    _msPerUnit = 60000 / tempoBpm / RhythmGrid.unitsPerQuarterNote;
+    _totalUnits = score.measures.length * score.unitsPerMeasure;
+    final normalSamples = await ClickSound.normalSamples(score.instrument);
+    final accentSamples = await ClickSound.accentSamples(score.instrument);
+    final wavBytes = _renderSequence(
+      score,
+      msPerUnit: _msPerUnit,
+      normalSamples: normalSamples,
+      accentSamples: accentSamples,
+    );
 
     _isPlaying = true;
     _anchor = null;
@@ -116,22 +123,30 @@ class RhythmPlayer {
 
   /// Mixes each event's click samples into a silent buffer at its exact
   /// sample position, producing one continuous WAV covering the whole score.
-  Uint8List _renderSequence(RhythmScore score, {required double msPerUnit}) {
-    final samplesPerUnit = (ClickSound.sampleRate * msPerUnit / 1000).round();
-    final totalUnits = score.measures.length * RhythmGrid.unitsPerMeasure;
-    final tailLength = ClickSound.normalClickSamples.length;
-    final mixBuffer = Int32List(totalUnits * samplesPerUnit + tailLength);
+  Uint8List _renderSequence(
+    RhythmScore score, {
+    required double msPerUnit,
+    required Int16List normalSamples,
+    required Int16List accentSamples,
+  }) {
+    // Kept fractional and rounded per hit, not once per unit: a unit is a
+    // small fraction of a beat, so a per-unit rounding error would add up
+    // across the whole score and drift the audio away from the playhead.
+    final samplesPerUnit = ClickSound.sampleRate * msPerUnit / 1000;
+    final totalUnits = score.measures.length * score.unitsPerMeasure;
+    final tailLength = normalSamples.length > accentSamples.length
+        ? normalSamples.length
+        : accentSamples.length;
+    final mixBuffer = Int32List((totalUnits * samplesPerUnit).ceil() + tailLength);
 
     for (var measureIndex = 0; measureIndex < score.measures.length; measureIndex++) {
       final measure = score.measures[measureIndex];
-      var unitCursor = measureIndex * RhythmGrid.unitsPerMeasure;
+      var unitCursor = measureIndex * score.unitsPerMeasure;
 
       for (final event in measure.events) {
         if (!event.isRest) {
-          final startSample = unitCursor * samplesPerUnit;
-          final clickSamples = event.type == EventType.accent
-              ? ClickSound.accentClickSamples
-              : ClickSound.normalClickSamples;
+          final startSample = (unitCursor * samplesPerUnit).round();
+          final clickSamples = event.type == EventType.accent ? accentSamples : normalSamples;
           for (var i = 0; i < clickSamples.length; i++) {
             mixBuffer[startSample + i] += clickSamples[i];
           }

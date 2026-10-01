@@ -11,11 +11,12 @@ import '../widgets/staff_notation_view.dart';
 
 enum _PracticePhase { idle, running, done }
 
-/// A silent-playback practice mode: the device shows the player where they
-/// are in the score (via a moving playhead across 3 fixed, rotating measure
-/// slots) but does not play the rhythm's sound -- the player plays it
-/// themselves on their instrument. Only a lead-in "Count-in" measure (4
-/// audible quarter-note clicks) before Measure 1 is audible.
+/// A practice mode showing the player where they are in the score (via a
+/// moving playhead across 3 fixed, rotating measure slots). A lead-in
+/// "Count-in" measure is always audible; whether the 8 real measures are
+/// *also* audible (playing the rhythm's actual hit sounds, so the player can
+/// follow along) or silent (so the player performs the rhythm themselves,
+/// unassisted) is a per-session toggle -- see [_rhythmSoundEnabled].
 ///
 /// The count-in is just another measure prepended to the same timeline the
 /// real measures play on, driven by the same single [AnimationController] --
@@ -42,9 +43,24 @@ class _PracticeScreenState extends State<PracticeScreen>
   static const _minTempoBpm = 20;
   static const _maxTempoBpm = 300;
   static const _tempoStepBpm = 5;
-  static const _countInBeats = 4;
-  static const _timelineMeasureCount = RhythmGrid.measuresCount + 1;
-  static const _totalUnits = _timelineMeasureCount * RhythmGrid.unitsPerMeasure;
+
+  /// The score's measure count is grown by the user (see the editor's "+"
+  /// button), so this can't be a compile-time constant.
+  int get _timelineMeasureCount => widget.score.measures.length + 1;
+
+  /// The count-in bar always has the same length as the score's real
+  /// measures (one click per beat), so it occupies one uniform "slot" on the
+  /// same timeline as every other measure.
+  int get _countInBeats => widget.score.beatsPerMeasure;
+
+  /// Units occupied by one beat under the score's meter -- a quarter note's
+  /// worth for a quarter-note beat unit, a half note's worth for a half-note
+  /// beat unit. The count-in's click spacing must match this, not a
+  /// hardcoded quarter note, or it would end up shorter than a real measure
+  /// whenever the beat unit isn't 4.
+  int get _unitsPerBeat => widget.score.unitsPerMeasure ~/ widget.score.beatsPerMeasure;
+
+  int get _totalUnits => _timelineMeasureCount * widget.score.unitsPerMeasure;
 
   /// Native position reports below this, right after play() starts, mean
   /// "still buffering," not real progress -- see `RhythmPlayer`'s identical
@@ -58,11 +74,19 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// ever fire when audio genuinely isn't available.
   static const _countInFallbackDelay = Duration(milliseconds: 1000);
 
-  static final _countdownMeasure = Measure(
-    List.generate(_countInBeats, (_) => const RhythmEvent(NoteValue.quarter, EventType.normal)),
+  /// Visual stand-in for the count-in: there's no "half note" [NoteValue], so
+  /// a half-note beat is shown as 2 back-to-back
+  /// quarter notes per beat instead of inventing a new note value just for
+  /// this -- the audible click spacing (see [_renderTimelineAudio]) is what
+  /// actually matters and doesn't read these events at all.
+  late final _countdownMeasure = Measure(
+    List.generate(
+      _countInBeats * (_unitsPerBeat ~/ NoteValue.quarter.units),
+      (_) => const RhythmEvent(NoteValue.quarter, EventType.normal),
+    ),
   );
 
-  final _slots = PracticeSlotAssignment(measuresCount: _timelineMeasureCount);
+  late final _slots = PracticeSlotAssignment(measuresCount: _timelineMeasureCount);
   final _clickPlayer = AudioPlayer(playerId: 'practice_click');
   late final AnimationController _playbackController;
 
@@ -72,6 +96,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   _PracticePhase _phase = _PracticePhase.idle;
   late int _practiceTempoBpm;
   double _globalUnits = 0;
+  bool _rhythmSoundEnabled = false;
 
   @override
   void initState() {
@@ -91,7 +116,7 @@ class _PracticeScreenState extends State<PracticeScreen>
     super.dispose();
   }
 
-  double get _msPerUnit => 60000 / _practiceTempoBpm / RhythmGrid.subdivisionsPerBeat;
+  double get _msPerUnit => 60000 / _practiceTempoBpm / RhythmGrid.unitsPerQuarterNote;
 
   String _labelFor(int timelineIndex) => timelineIndex == 0 ? 'Count-in' : 'Measure $timelineIndex';
 
@@ -101,7 +126,7 @@ class _PracticeScreenState extends State<PracticeScreen>
   void _onPlaybackTick() {
     final units = _playbackController.value * _totalUnits;
     final measureIndex =
-        (units / RhythmGrid.unitsPerMeasure).floor().clamp(0, _timelineMeasureCount - 1);
+        (units / widget.score.unitsPerMeasure).floor().clamp(0, _timelineMeasureCount - 1);
     if (_slots.currentMeasureIndex != measureIndex) {
       _slots.advanceTo(measureIndex);
     }
@@ -114,22 +139,58 @@ class _PracticeScreenState extends State<PracticeScreen>
     }
   }
 
-  /// Renders the count-in's 4 clicks into a single buffer up front and plays
-  /// it with one `play()` call -- triggering `play()` on the same player
-  /// once per beat sounded uneven or dropped the first beat, since each call
+  /// Renders the whole timeline's audio into a single buffer up front and
+  /// plays it with one `play()` call -- triggering `play()` once per beat/
+  /// note on the same player sounded uneven or dropped hits, since each call
   /// is an async platform-channel round-trip and back-to-back calls on the
   /// same player race each other (the same retrigger bug `RhythmPlayer` hit
-  /// and fixed the same way).
-  Uint8List _renderCountIn() {
-    final beatMs = 60000 / _practiceTempoBpm;
-    final samplesPerBeat = (ClickSound.sampleRate * beatMs / 1000).round();
-    final tailLength = ClickSound.normalClickSamples.length;
-    final mixBuffer = Int32List(samplesPerBeat * _countInBeats + tailLength);
+  /// and fixed the same way; see also `RhythmPlayer._renderSequence`, which
+  /// this mirrors for the 8 real measures' portion when [_rhythmSoundEnabled]
+  /// is on).
+  ///
+  /// The count-in is always rendered in; the real measures' actual hit
+  /// sounds are only mixed in when [_rhythmSoundEnabled] is on, so the same
+  /// single audio player and calibration keeps driving the playhead either
+  /// way -- there is no second, separately-clocked audio path to keep in
+  /// sync.
+  Future<Uint8List> _renderTimelineAudio() async {
+    // Fractional, rounded per hit -- see `RhythmPlayer._renderSequence`.
+    final samplesPerUnit = ClickSound.sampleRate * _msPerUnit / 1000;
+    final countInClick = await ClickSound.normalSamples(widget.score.instrument);
+    final rhythmNormal =
+        _rhythmSoundEnabled ? await ClickSound.normalSamples(widget.score.instrument) : null;
+    final rhythmAccent =
+        _rhythmSoundEnabled ? await ClickSound.accentSamples(widget.score.instrument) : null;
+
+    final tailLength = [
+      countInClick.length,
+      rhythmNormal?.length ?? 0,
+      rhythmAccent?.length ?? 0,
+    ].reduce((a, b) => a > b ? a : b);
+    final mixBuffer = Int32List((_totalUnits * samplesPerUnit).ceil() + tailLength);
+
+    void mixAt(int unitPosition, Int16List samples) {
+      final startSample = (unitPosition * samplesPerUnit).round();
+      for (var i = 0; i < samples.length; i++) {
+        mixBuffer[startSample + i] += samples[i];
+      }
+    }
 
     for (var beat = 0; beat < _countInBeats; beat++) {
-      final startSample = beat * samplesPerBeat;
-      for (var i = 0; i < ClickSound.normalClickSamples.length; i++) {
-        mixBuffer[startSample + i] += ClickSound.normalClickSamples[i];
+      mixAt(beat * _unitsPerBeat, countInClick);
+    }
+
+    if (_rhythmSoundEnabled) {
+      final countInUnits = widget.score.unitsPerMeasure;
+      for (var measureIndex = 0; measureIndex < widget.score.measures.length; measureIndex++) {
+        final measure = widget.score.measures[measureIndex];
+        var unitCursor = countInUnits + measureIndex * widget.score.unitsPerMeasure;
+        for (final event in measure.events) {
+          if (!event.isRest) {
+            mixAt(unitCursor, event.type == EventType.accent ? rhythmAccent! : rhythmNormal!);
+          }
+          unitCursor += event.durationUnits;
+        }
       }
     }
 
@@ -145,10 +206,27 @@ class _PracticeScreenState extends State<PracticeScreen>
     setState(() => _phase = _PracticePhase.running);
     _countInAnchor = null;
     _countInPositionSubscription = _clickPlayer.onPositionChanged.listen(_onCountInPositionSample);
-    unawaited(_clickPlayer.play(BytesSource(_renderCountIn())).catchError((_) {}));
+    // Fire-and-forget: the fallback timer below must not wait on this --
+    // sample loading is real async I/O (a WAV asset, decoded on first use;
+    // `ClickSound.preload()` in main() warms the cache ahead of time so this
+    // is normally already resolved), unrelated to the "no audio position
+    // ever arrived" case the fallback timer exists to handle.
+    unawaited(_playTimelineAudio());
     _countInFallbackTimer = Timer(_countInFallbackDelay, () {
       if (_countInAnchor == null) _beginTimeline(DateTime.now());
     });
+  }
+
+  Future<void> _playTimelineAudio() async {
+    try {
+      final timelineBytes = await _renderTimelineAudio();
+      await _clickPlayer.play(BytesSource(timelineBytes));
+    } catch (e) {
+      // Best-effort: the visual timeline still runs via the fallback timer
+      // in _start() even with no audio, so a failure here shouldn't block
+      // practice -- but it shouldn't be silent either.
+      debugPrint('Practice timeline audio failed to play: $e');
+    }
   }
 
   void _onCountInPositionSample(Duration position) {
@@ -230,6 +308,17 @@ class _PracticeScreenState extends State<PracticeScreen>
                 onDecrease: () => _adjustTempo(-_tempoStepBpm),
                 onIncrease: () => _adjustTempo(_tempoStepBpm),
               ),
+              const SizedBox(height: 8),
+              SwitchListTile(
+                key: const Key('practice_rhythm_sound_toggle'),
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Play rhythm sound'),
+                value: _rhythmSoundEnabled,
+                onChanged: _phase == _PracticePhase.idle
+                    ? (value) => setState(() => _rhythmSoundEnabled = value)
+                    : null,
+              ),
               const SizedBox(height: 16),
               // Stacked full-width, one measure per row (like systems in sheet
               // music) rather than side-by-side: splitting the screen width 3
@@ -240,7 +329,7 @@ class _PracticeScreenState extends State<PracticeScreen>
                   final isActive =
                       timelineIndex != null && timelineIndex == _slots.currentMeasureIndex;
                   final playheadUnits = isActive
-                      ? _globalUnits - timelineIndex * RhythmGrid.unitsPerMeasure
+                      ? _globalUnits - timelineIndex * widget.score.unitsPerMeasure
                       : null;
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 12),
@@ -249,6 +338,7 @@ class _PracticeScreenState extends State<PracticeScreen>
                       label: timelineIndex == null ? '' : _labelFor(timelineIndex),
                       measureIndex: timelineIndex,
                       measure: timelineIndex != null ? _measureFor(timelineIndex) : null,
+                      unitsPerMeasure: widget.score.unitsPerMeasure,
                       isActive: isActive,
                       playheadUnits: playheadUnits,
                     ),
@@ -338,6 +428,7 @@ class _PracticeSlotView extends StatelessWidget {
   final String label;
   final int? measureIndex;
   final Measure? measure;
+  final int unitsPerMeasure;
   final bool isActive;
   final double? playheadUnits;
 
@@ -346,6 +437,7 @@ class _PracticeSlotView extends StatelessWidget {
     required this.label,
     required this.measureIndex,
     required this.measure,
+    required this.unitsPerMeasure,
     required this.isActive,
     required this.playheadUnits,
   });
@@ -376,6 +468,7 @@ class _PracticeSlotView extends StatelessWidget {
                   : StaffNotationView(
                       key: ValueKey(measureIndex),
                       measure: measure!,
+                      unitsPerMeasure: unitsPerMeasure,
                       playheadUnits: playheadUnits,
                     ),
             ),

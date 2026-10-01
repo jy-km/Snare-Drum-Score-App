@@ -17,9 +17,9 @@ PracticeSlot slotForMeasure(int measureIndex) => PracticeSlot.values[measureInde
 /// stays fixed.
 class PracticeSlotAssignment {
   /// Total number of measures in the sequence being displayed. Defaults to a
-  /// plain score ([RhythmGrid.measuresCount]); callers prepending extra
-  /// measures (e.g. a count-in) pass the larger total so blanking at the tail
-  /// still lands on the true last measure.
+  /// plain score ([RhythmGrid.defaultMeasuresCount]); callers prepending
+  /// extra measures (e.g. a count-in) pass the larger total so blanking at
+  /// the tail still lands on the true last measure.
   final int measuresCount;
 
   final Map<PracticeSlot, int?> content = {
@@ -30,7 +30,7 @@ class PracticeSlotAssignment {
 
   int? currentMeasureIndex;
 
-  PracticeSlotAssignment({this.measuresCount = RhythmGrid.measuresCount});
+  PracticeSlotAssignment({this.measuresCount = RhythmGrid.defaultMeasuresCount});
 
   void reset() {
     content[PracticeSlot.a] = 0;
