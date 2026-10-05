@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Listening to the player's hits through the microphone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
-        android:label="snare_drum_score_app"
+        android:label="MyTempo"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

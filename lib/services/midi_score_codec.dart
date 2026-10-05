@@ -32,19 +32,27 @@ class MidiScoreCodec {
         0,
         SetTempoEvent()..microsecondsPerBeat = (60000000 / score.tempoBpm).round(),
       ),
-      _AbsoluteEvent(
-        0,
-        TimeSignatureEvent()
-          ..numerator = score.beatsPerMeasure
-          ..denominator = score.beatUnit,
-      ),
     ];
 
     final noteNumber = score.instrument.midiNoteNumber;
+    final measureStarts = score.measureStartUnits;
 
     for (var measureIndex = 0; measureIndex < score.measures.length; measureIndex++) {
       final measure = score.measures[measureIndex];
-      var cursorTick = measureIndex * score.unitsPerMeasure * ticksPerUnit;
+      var cursorTick = measureStarts[measureIndex] * ticksPerUnit;
+
+      // A time signature at the start of the score, and again wherever it
+      // changes -- the standard MIDI way of writing a meter change.
+      if (measureIndex == 0 || measure.meter != score.measures[measureIndex - 1].meter) {
+        absoluteEvents.add(
+          _AbsoluteEvent(
+            cursorTick,
+            TimeSignatureEvent()
+              ..numerator = measure.meter.beats
+              ..denominator = measure.meter.beatUnit,
+          ),
+        );
+      }
 
       for (final event in measure.events) {
         final durationTicks = event.durationUnits * ticksPerUnit;
@@ -72,8 +80,17 @@ class MidiScoreCodec {
       }
     }
 
-    absoluteEvents.sort((a, b) => a.tick.compareTo(b.tick));
-    final endTick = score.measures.length * score.unitsPerMeasure * ticksPerUnit;
+    // Ties are kept in the order the events were added. That order matters:
+    // a note's note-off and the next note's note-on often share a tick, and
+    // the off must come first for the decoder to pair them correctly -- but
+    // List.sort isn't stable (beyond a few dozen elements it may swap equal
+    // ticks), so the tie has to be broken explicitly.
+    final order = {for (var i = 0; i < absoluteEvents.length; i++) absoluteEvents[i]: i};
+    absoluteEvents.sort((a, b) {
+      final byTick = a.tick.compareTo(b.tick);
+      return byTick != 0 ? byTick : order[a]!.compareTo(order[b]!);
+    });
+    final endTick = score.totalUnits * ticksPerUnit;
     absoluteEvents.add(_AbsoluteEvent(endTick, EndOfTrackEvent()));
 
     final events = <MidiEvent>[];
@@ -99,8 +116,10 @@ class MidiScoreCodec {
 
     var title = 'Untitled';
     var tempoBpm = 100;
-    var beatsPerMeasure = RhythmGrid.defaultBeatsPerMeasure;
-    var beatUnit = RhythmGrid.defaultBeatUnit;
+    // Each time signature and the tick it takes effect from. Files written
+    // before meters could change mid-score have one, at tick 0; a file with
+    // none is in 4/4.
+    final meterChanges = <(int, TimeSignature)>[(0, TimeSignature.common)];
     var instrument = Instrument.snare;
     var absoluteTick = 0;
     final intervals = <_SoundingInterval>[];
@@ -114,12 +133,24 @@ class MidiScoreCodec {
       } else if (event is SetTempoEvent) {
         tempoBpm = (60000000 / event.microsecondsPerBeat).round();
       } else if (event is TimeSignatureEvent) {
-        beatsPerMeasure = event.numerator;
-        beatUnit = event.denominator;
+        final meter = TimeSignature(event.numerator, event.denominator);
+        // One this app can't represent (e.g. 6/8 from another program) is
+        // read as 4/4 rather than refusing the whole file.
+        meterChanges.add((absoluteTick, meter.isValid ? meter : TimeSignature.common));
       } else if (event is NoteOnEvent && event.velocity > 0) {
+        // Files saved before `encode` broke same-tick ties explicitly can
+        // have a note's note-on ahead of the previous note's note-off. A new
+        // note starting therefore ends the one still sounding...
+        if (pendingOnTick != null && absoluteTick > pendingOnTick) {
+          intervals.add(_SoundingInterval(pendingOnTick, absoluteTick, pendingVelocity!));
+        }
         pendingOnTick = absoluteTick;
         pendingVelocity = event.velocity;
         instrument = InstrumentMidiNote.fromMidiNoteNumber(event.noteNumber);
+      } else if (event is NoteOffEvent && pendingOnTick == absoluteTick) {
+        // ...and the late note-off that follows, on the very tick the new
+        // note started, belongs to that earlier note -- this app never
+        // writes a zero-length note.
       } else if (event is NoteOffEvent && pendingOnTick != null) {
         intervals.add(_SoundingInterval(pendingOnTick, absoluteTick, pendingVelocity!));
         pendingOnTick = null;
@@ -127,56 +158,75 @@ class MidiScoreCodec {
       }
     }
 
-    final unitsPerMeasure = beatsPerMeasure * (RhythmGrid.unitsPerWholeNote ~/ beatUnit);
-    final measureLengthTicks = unitsPerMeasure * ticksPerUnitInFile;
+    TimeSignature meterAt(int tick) {
+      var meter = meterChanges.first.$2;
+      for (final (changeTick, changedMeter) in meterChanges) {
+        if (changeTick <= tick) meter = changedMeter;
+      }
+      return meter;
+    }
+
     // `absoluteTick` now sits at the last event processed -- by construction
-    // in `encode`, that's always the EndOfTrackEvent at exactly
-    // `measures.length * measureLengthTicks`, so this recovers the original
-    // (possibly user-grown-beyond-the-starting-8) measure count without
-    // needing a dedicated meta-event for it.
-    final measuresCount = (absoluteTick / measureLengthTicks).round().clamp(1, 1 << 20);
-    final measures = List.generate(measuresCount, (measureIndex) {
-      final measureStartTick = measureIndex * measureLengthTicks;
-      final measureEndTick = measureStartTick + measureLengthTicks;
-      final measureIntervals = intervals
-          .where((i) => i.onTick >= measureStartTick && i.onTick < measureEndTick)
-          .toList()
-        ..sort((a, b) => a.onTick.compareTo(b.onTick));
-
-      final events = <RhythmEvent>[];
-      var cursorTick = measureStartTick;
-
-      void fillGapUntil(int endTick) {
-        if (endTick <= cursorTick) return;
-        final startUnit = (cursorTick - measureStartTick) ~/ ticksPerUnitInFile;
-        final gapUnits = (endTick - cursorTick) ~/ ticksPerUnitInFile;
-        events.addAll(_restsForGap(startUnit, gapUnits));
-      }
-
-      for (final interval in measureIntervals) {
-        fillGapUntil(interval.onTick);
-        final durationUnits =
-            ((interval.offTick - interval.onTick) / ticksPerUnitInFile).round();
-        final value = _nearestNoteValue(durationUnits);
-        final type =
-            interval.velocity >= _accentVelocityThreshold ? EventType.accent : EventType.normal;
-        events.add(RhythmEvent(value, type));
-        cursorTick = interval.onTick + value.units * ticksPerUnitInFile;
-      }
-
-      fillGapUntil(measureEndTick);
-
-      return Measure(events);
-    });
+    // in `encode`, that's always the EndOfTrackEvent at the very end of the
+    // last measure, so laying measures out one after another up to it
+    // recovers the original (possibly user-grown-beyond-the-starting-8)
+    // measure count without needing a dedicated meta-event for it.
+    final endTick = absoluteTick;
+    final measures = <Measure>[];
+    var measureStartTick = 0;
+    do {
+      final meter = meterAt(measureStartTick);
+      final measureEndTick = measureStartTick + meter.units * ticksPerUnitInFile;
+      measures.add(
+        _decodeMeasure(intervals, meter, measureStartTick, measureEndTick, ticksPerUnitInFile),
+      );
+      measureStartTick = measureEndTick;
+      // Stop once less than half a measure is left: what's left is rounding.
+    } while (endTick - measureStartTick > meterAt(measureStartTick).units * ticksPerUnitInFile / 2);
 
     return RhythmScore(
       title: title,
       tempoBpm: tempoBpm,
-      beatsPerMeasure: beatsPerMeasure,
-      beatUnit: beatUnit,
       instrument: instrument,
       measures: measures,
     );
+  }
+
+  static Measure _decodeMeasure(
+    List<_SoundingInterval> intervals,
+    TimeSignature meter,
+    int measureStartTick,
+    int measureEndTick,
+    int ticksPerUnitInFile,
+  ) {
+    final measureIntervals = intervals
+        .where((i) => i.onTick >= measureStartTick && i.onTick < measureEndTick)
+        .toList()
+      ..sort((a, b) => a.onTick.compareTo(b.onTick));
+
+    final events = <RhythmEvent>[];
+    var cursorTick = measureStartTick;
+
+    void fillGapUntil(int endTick) {
+      if (endTick <= cursorTick) return;
+      final startUnit = (cursorTick - measureStartTick) ~/ ticksPerUnitInFile;
+      final gapUnits = (endTick - cursorTick) ~/ ticksPerUnitInFile;
+      events.addAll(_restsForGap(startUnit, gapUnits));
+    }
+
+    for (final interval in measureIntervals) {
+      fillGapUntil(interval.onTick);
+      final durationUnits = ((interval.offTick - interval.onTick) / ticksPerUnitInFile).round();
+      final value = _nearestNoteValue(durationUnits);
+      final type =
+          interval.velocity >= _accentVelocityThreshold ? EventType.accent : EventType.normal;
+      events.add(RhythmEvent(value, type));
+      cursorTick = interval.onTick + value.units * ticksPerUnitInFile;
+    }
+
+    fillGapUntil(measureEndTick);
+
+    return Measure(events, meter: meter);
   }
 
   static const _valuesLargestFirst = [

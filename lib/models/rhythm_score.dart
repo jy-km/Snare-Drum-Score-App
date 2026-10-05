@@ -4,10 +4,10 @@ import 'package:flutter/foundation.dart';
 /// "units", where one unit is 1/[unitsPerQuarterNote] of a quarter note --
 /// the coarsest resolution at which both a sixteenth note (3 units) and an
 /// eighth-note triplet (4 units) are whole numbers. The time signature is
-/// per-score and adjustable -- numerator ([RhythmScore.beatsPerMeasure])
-/// within [minBeatsPerMeasure]..[maxBeatsPerMeasureFor], denominator
-/// ([RhythmScore.beatUnit]) one of [beatUnits] (quarter-note or half-note
-/// beats). The number of measures is also per-score and growable (see
+/// per-measure (see [TimeSignature]) -- numerator within
+/// [minBeatsPerMeasure]..[maxBeatsPerMeasureFor], denominator one of
+/// [beatUnits] (quarter-note or half-note beats). The number of measures is
+/// also per-score and growable (see
 /// [RhythmScore.appendMeasure]); [defaultMeasuresCount] is only the starting
 /// count for a newly created score.
 class RhythmGrid {
@@ -29,14 +29,46 @@ class RhythmGrid {
   /// quarter-note beat, 1/2..8/2 for a half-note beat.
   static int maxBeatsPerMeasureFor(int beatUnit) => beatUnit == 2 ? 8 : maxBeatsPerMeasure;
 
-  /// Units for a measure at [defaultBeatsPerMeasure]/[defaultBeatUnit] (4/4)
-  /// -- used as the default capacity for [Measure] methods called without an
-  /// explicit score context.
+  /// Units for a measure at [defaultBeatsPerMeasure]/[defaultBeatUnit] (4/4).
   static const int defaultUnitsPerMeasure = defaultBeatsPerMeasure * unitsPerQuarterNote;
 }
 
-/// Which drum sounds when a note is hit. Chosen per-score, the same way
-/// [RhythmScore.beatsPerMeasure] is -- affects both verification/practice
+/// A measure's time signature: [beats] beats of a [beatUnit] note each
+/// (4 = quarter note, 2 = half note).
+@immutable
+class TimeSignature {
+  final int beats;
+  final int beatUnit;
+
+  const TimeSignature(this.beats, this.beatUnit);
+
+  /// 4/4.
+  static const common =
+      TimeSignature(RhythmGrid.defaultBeatsPerMeasure, RhythmGrid.defaultBeatUnit);
+
+  /// A measure's capacity in [RhythmGrid] units under this time signature.
+  int get units => beats * unitsPerBeat;
+
+  int get unitsPerBeat => RhythmGrid.unitsPerWholeNote ~/ beatUnit;
+
+  bool get isValid =>
+      RhythmGrid.beatUnits.contains(beatUnit) &&
+      beats >= RhythmGrid.minBeatsPerMeasure &&
+      beats <= RhythmGrid.maxBeatsPerMeasureFor(beatUnit);
+
+  @override
+  bool operator ==(Object other) =>
+      other is TimeSignature && other.beats == beats && other.beatUnit == beatUnit;
+
+  @override
+  int get hashCode => Object.hash(beats, beatUnit);
+
+  @override
+  String toString() => '$beats/$beatUnit';
+}
+
+/// Which drum sounds when a note is hit. Chosen per-score -- affects both
+/// verification/practice
 /// playback (see `ClickSound`) and which General MIDI percussion note the
 /// score is encoded with.
 enum Instrument { kick, snare, tambourine }
@@ -121,50 +153,64 @@ class RhythmEvent {
 }
 
 /// A measure built by appending [RhythmEvent]s left to right (append-only
-/// entry for v1). Always filled to at most the measure's capacity (in
-/// [RhythmGrid] units, per the score's meter); never
-/// overfilled. Capacity defaults to [RhythmGrid.defaultUnitsPerMeasure] (4/4)
-/// for callers without a specific score's meter in hand.
+/// entry for v1), in its own time signature ([meter]). Always filled to at
+/// most the meter's capacity (in [RhythmGrid] units); never overfilled.
 class Measure {
   final List<RhythmEvent> events;
+  final TimeSignature meter;
 
-  Measure(this.events);
+  Measure(this.events, {this.meter = TimeSignature.common}) : assert(meter.isValid);
 
-  factory Measure.empty() => Measure(const []);
+  factory Measure.empty({TimeSignature meter = TimeSignature.common}) =>
+      Measure(const [], meter: meter);
 
   static int _totalUnits(List<RhythmEvent> events) =>
       events.fold(0, (sum, e) => sum + e.durationUnits);
 
+  /// This measure's capacity in [RhythmGrid] units.
+  int get capacityUnits => meter.units;
+
   int get filledUnits => _totalUnits(events);
 
-  /// Remaining capacity at the default 4/4 measure size. For a specific
-  /// score's meter, compare [filledUnits] against `score.unitsPerMeasure`
-  /// directly (see [canAppend]).
-  int get remainingUnits => RhythmGrid.defaultUnitsPerMeasure - filledUnits;
+  int get remainingUnits => capacityUnits - filledUnits;
 
-  /// Whether this measure is filled at the default 4/4 measure size.
   bool get isComplete => remainingUnits == 0;
 
-  bool canAppend(NoteValue value, [int unitsPerMeasure = RhythmGrid.defaultUnitsPerMeasure]) =>
-      value.units <= unitsPerMeasure - filledUnits;
+  /// Whether anything is to be played here -- a measure of only rests (or
+  /// nothing) has no notes.
+  bool get hasNotes => events.any((event) => !event.isRest);
 
-  Measure appendEvent(RhythmEvent event,
-      [int unitsPerMeasure = RhythmGrid.defaultUnitsPerMeasure]) {
-    assert(canAppend(event.value, unitsPerMeasure));
-    return Measure([...events, event]);
+  bool canAppend(NoteValue value) => value.units <= remainingUnits;
+
+  Measure appendEvent(RhythmEvent event) {
+    assert(canAppend(event.value));
+    return Measure([...events, event], meter: meter);
   }
 
   Measure removeLast() {
     if (events.isEmpty) return this;
-    return Measure(events.sublist(0, events.length - 1));
+    return Measure(events.sublist(0, events.length - 1), meter: meter);
+  }
+
+  /// This measure in [meter] instead, keeping as many of its events, from
+  /// the start, as fit the new capacity.
+  Measure withMeter(TimeSignature meter) {
+    final kept = <RhythmEvent>[];
+    var filled = 0;
+    for (final event in events) {
+      if (filled + event.durationUnits > meter.units) break;
+      kept.add(event);
+      filled += event.durationUnits;
+    }
+    return Measure(kept, meter: meter);
   }
 
   @override
   bool operator ==(Object other) =>
-      other is Measure && listEquals(other.events, events);
+      other is Measure && other.meter == meter && listEquals(other.events, events);
 
   @override
-  int get hashCode => Object.hashAll(events);
+  int get hashCode => Object.hash(meter, Object.hashAll(events));
 }
 
 class RhythmScore {
@@ -174,69 +220,43 @@ class RhythmScore {
   /// from a future, independently adjustable practice-session tempo.
   final int tempoBpm;
 
-  /// Time signature numerator (beats per measure). Must be within
-  /// [RhythmGrid.minBeatsPerMeasure]..`RhythmGrid.maxBeatsPerMeasureFor(beatUnit)`.
-  final int beatsPerMeasure;
-
-  /// Time signature denominator: 4 (a quarter note is one beat) or 2 (a half
-  /// note is one beat). One of [RhythmGrid.beatUnits].
-  final int beatUnit;
-
   /// Which drum sounds for every hit in this score.
   final Instrument instrument;
 
+  /// Each with its own time signature (see [Measure.meter]).
   final List<Measure> measures;
-
-  /// A measure's capacity in [RhythmGrid] units under this score's meter.
-  int get unitsPerMeasure =>
-      beatsPerMeasure * (RhythmGrid.unitsPerWholeNote ~/ beatUnit);
 
   RhythmScore({
     required this.title,
     required this.tempoBpm,
-    this.beatsPerMeasure = RhythmGrid.defaultBeatsPerMeasure,
-    this.beatUnit = RhythmGrid.defaultBeatUnit,
     this.instrument = Instrument.snare,
     required this.measures,
-  })  : assert(measures.isNotEmpty),
-        assert(RhythmGrid.beatUnits.contains(beatUnit)),
-        assert(beatsPerMeasure >= RhythmGrid.minBeatsPerMeasure &&
-            beatsPerMeasure <= RhythmGrid.maxBeatsPerMeasureFor(beatUnit));
+  }) : assert(measures.isNotEmpty);
 
   factory RhythmScore.empty({
     String title = 'Untitled',
     int tempoBpm = 100,
-    int beatsPerMeasure = RhythmGrid.defaultBeatsPerMeasure,
-    int beatUnit = RhythmGrid.defaultBeatUnit,
+    TimeSignature meter = TimeSignature.common,
     Instrument instrument = Instrument.snare,
     int measuresCount = RhythmGrid.defaultMeasuresCount,
   }) {
     return RhythmScore(
       title: title,
       tempoBpm: tempoBpm,
-      beatsPerMeasure: beatsPerMeasure,
-      beatUnit: beatUnit,
       instrument: instrument,
-      measures: List.generate(
-        measuresCount,
-        (_) => Measure.empty(),
-      ),
+      measures: List.generate(measuresCount, (_) => Measure.empty(meter: meter)),
     );
   }
 
   RhythmScore copyWith({
     String? title,
     int? tempoBpm,
-    int? beatsPerMeasure,
-    int? beatUnit,
     Instrument? instrument,
     List<Measure>? measures,
   }) {
     return RhythmScore(
       title: title ?? this.title,
       tempoBpm: tempoBpm ?? this.tempoBpm,
-      beatsPerMeasure: beatsPerMeasure ?? this.beatsPerMeasure,
-      beatUnit: beatUnit ?? this.beatUnit,
       instrument: instrument ?? this.instrument,
       measures: measures ?? this.measures,
     );
@@ -248,20 +268,103 @@ class RhythmScore {
     return copyWith(measures: updated);
   }
 
-  /// Appends one new empty measure to the end of the score.
-  RhythmScore appendMeasure() => copyWith(measures: [...measures, Measure.empty()]);
+  /// Where each measure starts, in [RhythmGrid] units from the start of the
+  /// score -- with one more entry at the end, where the score ends.
+  List<int> get measureStartUnits {
+    final starts = [0];
+    for (final measure in measures) {
+      starts.add(starts.last + measure.capacityUnits);
+    }
+    return starts;
+  }
+
+  /// The whole score's length in [RhythmGrid] units.
+  int get totalUnits => measureStartUnits.last;
+
+  /// Which measure [units] (from the start of the score) falls in -- the
+  /// first or last measure for a position before or past the score.
+  int measureIndexAt(double units) {
+    final starts = measureStartUnits;
+    for (var index = 0; index < measures.length; index++) {
+      if (units < starts[index + 1]) return index;
+    }
+    return measures.length - 1;
+  }
+
+  /// Changes the time signature from measure [measureIndex] on: that
+  /// measure takes [meter] (keeping as many of its events as fit -- see
+  /// [Measure.withMeter]), and so does every later measure that has no
+  /// notes yet. A later measure that already has notes keeps its own time
+  /// signature and content untouched. Earlier measures are never changed.
+  ///
+  /// A later measure with only rests counts as having no notes (its rests
+  /// are dropped): saving and reopening a score fills empty measures with
+  /// rests, and they shouldn't stop following meter changes because of it.
+  RhythmScore withMeterFrom(int measureIndex, TimeSignature meter) {
+    final updated = List<Measure>.of(measures);
+    updated[measureIndex] = measures[measureIndex].withMeter(meter);
+    for (var index = measureIndex + 1; index < measures.length; index++) {
+      if (!measures[index].hasNotes) updated[index] = Measure.empty(meter: meter);
+    }
+    return copyWith(measures: updated);
+  }
+
+  /// Where every note (not rest) starts, in [RhythmGrid] units from the
+  /// start of the score, in playing order.
+  List<int> get noteStartUnits {
+    final starts = <int>[];
+    final measureStarts = measureStartUnits;
+    for (var measureIndex = 0; measureIndex < measures.length; measureIndex++) {
+      var unit = measureStarts[measureIndex];
+      for (final event in measures[measureIndex].events) {
+        if (!event.isRest) starts.add(unit);
+        unit += event.durationUnits;
+      }
+    }
+    return starts;
+  }
+
+  /// The stretches where nothing should be played, as (start, end) in
+  /// [RhythmGrid] units from the start of the score: every rest, and any
+  /// unfilled space at the end of a measure (it plays as silence, and is
+  /// filled in as rests when the score is saved and reopened). Back-to-back
+  /// rests come out as one stretch.
+  List<(int, int)> get restSpanUnits {
+    final spans = <(int, int)>[];
+    void addSilence(int start, int end) {
+      if (end <= start) return;
+      if (spans.isNotEmpty && spans.last.$2 == start) {
+        spans[spans.length - 1] = (spans.last.$1, end);
+      } else {
+        spans.add((start, end));
+      }
+    }
+
+    final measureStarts = measureStartUnits;
+    for (var measureIndex = 0; measureIndex < measures.length; measureIndex++) {
+      var unit = measureStarts[measureIndex];
+      for (final event in measures[measureIndex].events) {
+        if (event.isRest) addSilence(unit, unit + event.durationUnits);
+        unit += event.durationUnits;
+      }
+      addSilence(unit, measureStarts[measureIndex + 1]);
+    }
+    return spans;
+  }
+
+  /// Appends one new empty measure to the end of the score, in the last
+  /// measure's time signature.
+  RhythmScore appendMeasure() =>
+      copyWith(measures: [...measures, Measure.empty(meter: measures.last.meter)]);
 
   @override
   bool operator ==(Object other) =>
       other is RhythmScore &&
       other.title == title &&
       other.tempoBpm == tempoBpm &&
-      other.beatsPerMeasure == beatsPerMeasure &&
-      other.beatUnit == beatUnit &&
       other.instrument == instrument &&
       listEquals(other.measures, measures);
 
   @override
-  int get hashCode => Object.hash(
-      title, tempoBpm, beatsPerMeasure, beatUnit, instrument, Object.hashAll(measures));
+  int get hashCode => Object.hash(title, tempoBpm, instrument, Object.hashAll(measures));
 }

@@ -1,3 +1,4 @@
+import 'package:dart_midi_pro/dart_midi_pro.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:snare_drum_score_app/models/rhythm_score.dart';
@@ -140,44 +141,134 @@ void main() {
   });
 
   test('A non-4/4 meter round-trips through MIDI bytes', () {
-    var score = RhythmScore.empty(title: 'Seven Four', beatsPerMeasure: 7);
-    expect(score.unitsPerMeasure, equals(84));
+    const sevenFour = TimeSignature(7, 4);
+    var score = RhythmScore.empty(title: 'Seven Four', meter: sevenFour);
+    expect(sevenFour.units, equals(84));
 
-    var measure0 = Measure.empty();
+    var measure0 = Measure.empty(meter: sevenFour);
     for (var i = 0; i < 7; i++) {
-      measure0 = measure0.appendEvent(
-        const RhythmEvent(NoteValue.quarter, EventType.normal),
-        score.unitsPerMeasure,
-      );
+      measure0 = measure0.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal));
     }
     score = score.copyWithMeasure(0, measure0);
 
     final bytes = MidiScoreCodec.encode(score);
     final decoded = MidiScoreCodec.decode(bytes);
 
-    expect(decoded.beatsPerMeasure, equals(7));
+    expect(decoded.measures.every((m) => m.meter == sevenFour), isTrue);
+    expect(decoded.measures.length, 8);
     expect(decoded.measures[0], equals(measure0));
   });
 
   test('A half-note-beat meter (3/2) round-trips through MIDI bytes', () {
-    var score = RhythmScore.empty(title: 'Three Two', beatsPerMeasure: 3, beatUnit: 2);
+    const threeTwo = TimeSignature(3, 2);
+    var score = RhythmScore.empty(title: 'Three Two', meter: threeTwo);
     // 3 beats * 24 units per half-note beat = 72.
-    expect(score.unitsPerMeasure, equals(72));
+    expect(threeTwo.units, equals(72));
 
-    var measure0 = Measure.empty();
+    var measure0 = Measure.empty(meter: threeTwo);
     for (var i = 0; i < 6; i++) {
-      measure0 = measure0.appendEvent(
-        const RhythmEvent(NoteValue.quarter, EventType.normal),
-        score.unitsPerMeasure,
-      );
+      measure0 = measure0.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal));
     }
     score = score.copyWithMeasure(0, measure0);
 
     final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
 
-    expect(decoded.beatsPerMeasure, equals(3));
-    expect(decoded.beatUnit, equals(2));
+    expect(decoded.measures[0].meter, threeTwo);
     expect(decoded.measures[0], equals(measure0));
+  });
+
+  test('Different time signatures in different measures round-trip through MIDI bytes', () {
+    // 4/4, 4/4, 3/4, 3/4, 7/4, 3/2, 3/2, 4/4 -- each measure filled with
+    // its own number of quarter notes.
+    const meters = [
+      TimeSignature(4, 4),
+      TimeSignature(4, 4),
+      TimeSignature(3, 4),
+      TimeSignature(3, 4),
+      TimeSignature(7, 4),
+      TimeSignature(3, 2),
+      TimeSignature(3, 2),
+      TimeSignature(4, 4),
+    ];
+    final score = RhythmScore(
+      title: 'Changing',
+      tempoBpm: 100,
+      measures: [
+        for (final meter in meters)
+          Measure(
+            List.filled(
+              meter.units ~/ NoteValue.quarter.units,
+              const RhythmEvent(NoteValue.quarter, EventType.normal),
+            ),
+            meter: meter,
+          ),
+      ],
+    );
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.measures.map((m) => m.meter), meters);
+    expect(decoded.measures, equals(score.measures));
+  });
+
+  test('A file with a note-on ahead of the previous note-off on the same tick still reads right',
+      () {
+    // How files saved before the tie fix could come out: two eighth notes
+    // back to back (240 ticks each), with the second note's note-on written
+    // before the first one's note-off.
+    MidiEvent at(int delta, MidiEvent event) => event..deltaTime = delta;
+    NoteOnEvent on(int velocity) => NoteOnEvent()
+      ..noteNumber = 38
+      ..velocity = velocity
+      ..channel = 9;
+    NoteOffEvent off() => NoteOffEvent()
+      ..noteNumber = 38
+      ..velocity = 0
+      ..channel = 9;
+    final bytes = MidiWriter().writeMidiToBuffer(
+      MidiFile(
+        [
+          [
+            at(0, TrackNameEvent()..text = 'Old file'),
+            at(0, SetTempoEvent()..microsecondsPerBeat = 600000),
+            at(0, on(110)),
+            at(240, on(64)), // second note starts...
+            at(0, off()), // ...before the first one's note-off
+            at(240, off()),
+            at(1440, EndOfTrackEvent()), // rest of the 4/4 measure
+          ],
+        ],
+        MidiHeader(format: 0, numTracks: 1, ticksPerBeat: 480),
+      ),
+    );
+
+    final decoded = MidiScoreCodec.decode(bytes);
+
+    expect(decoded.measures.single.events.take(2), const [
+      RhythmEvent(NoteValue.eighth, EventType.accent),
+      RhythmEvent(NoteValue.eighth, EventType.normal),
+    ]);
+  });
+
+  test('A long, dense score round-trips note for note', () {
+    // Regression: notes back to back put one note's note-off and the next
+    // one's note-on on the same tick, and with enough events List.sort (not
+    // stable) could put the note-on first -- which the decoder misreads.
+    var measure = Measure.empty();
+    for (var i = 0; i < 16; i++) {
+      measure = measure.appendEvent(
+        RhythmEvent(NoteValue.sixteenth, i.isEven ? EventType.accent : EventType.normal),
+      );
+    }
+    final score = RhythmScore(
+      title: 'Sixteenths',
+      tempoBpm: 100,
+      measures: List.filled(8, measure),
+    );
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.measures, equals(score.measures));
   });
 
   test('Instrument round-trips through MIDI bytes', () {

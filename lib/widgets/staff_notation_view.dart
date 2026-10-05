@@ -11,58 +11,101 @@ import '../models/rhythm_score.dart';
 /// formula, so alignment between the moving bar and the notes it should
 /// coincide with is guaranteed by construction rather than approximated.
 class StaffNotationView extends StatelessWidget {
+  /// Drawn across the full width, scaled to its own time signature's
+  /// capacity ([Measure.capacityUnits]).
   final Measure measure;
 
-  /// This measure's capacity in [RhythmGrid] units (see
-  /// [RhythmScore.unitsPerMeasure]), used to scale note/playhead
-  /// x-positions. Defaults to 4/4 for callers without a specific score's
-  /// meter in hand.
-  final int unitsPerMeasure;
+  /// Whether to print the measure's time signature after the clef -- as
+  /// sheet music does at the start of a piece and wherever it changes.
+  final bool showTimeSignature;
 
   /// Continuous position within this measure, in [RhythmGrid] units
-  /// (0..[unitsPerMeasure]), or null to hide the playhead.
+  /// (0..the measure's capacity), or null to hide the playhead.
   final double? playheadUnits;
 
   /// Whether to show an insertion-point cursor at the end of the entered
   /// content (append-only entry — hidden during playback).
   final bool showCursor;
 
+  /// Marks drawn in a row under the staff -- where the player's hits
+  /// actually landed. Positioned by the same time-to-position formula as
+  /// the notes, so a mark sits directly under its note only if the hit was
+  /// on time. A new list must be passed for a change to be drawn.
+  final List<StaffMark> marks;
+
+  /// How tall to draw. Everything drawn fits from [minHeight] up; extra
+  /// height is split evenly above and below.
+  final double height;
+
+  static const double defaultHeight = 140;
+  static const double minHeight = 112;
+
   const StaffNotationView({
     super.key,
     required this.measure,
-    this.unitsPerMeasure = RhythmGrid.defaultUnitsPerMeasure,
+    this.showTimeSignature = false,
     this.playheadUnits,
     this.showCursor = false,
-  });
+    this.marks = const [],
+    this.height = defaultHeight,
+  }) : assert(height >= minHeight);
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 140,
+      height: height,
       width: double.infinity,
       child: CustomPaint(
         painter: _StaffPainter(
           measure: measure,
-          unitsPerMeasure: unitsPerMeasure,
+          showTimeSignature: showTimeSignature,
           playheadUnits: playheadUnits,
           showCursor: showCursor,
+          marks: marks,
         ),
       ),
     );
   }
 }
 
+/// One mark under the staff of a [StaffNotationView].
+class StaffMark {
+  /// Position within the measure, in [RhythmGrid] units. May fall slightly
+  /// outside the measure (a hit just early for its first note, or just late
+  /// for its last), and is then drawn just past the corresponding end.
+  final double units;
+
+  final Color color;
+
+  /// Drawn as a cross instead of a dot: something that should have happened
+  /// here and didn't (a note nobody hit), rather than a hit.
+  final bool isAbsence;
+
+  /// A few characters printed small under the mark, e.g. a timing error.
+  /// Needs the staff's full [StaffNotationView.defaultHeight] to fit.
+  final String? label;
+
+  const StaffMark({
+    required this.units,
+    required this.color,
+    this.isAbsence = false,
+    this.label,
+  });
+}
+
 class _StaffPainter extends CustomPainter {
   final Measure measure;
-  final int unitsPerMeasure;
+  final bool showTimeSignature;
   final double? playheadUnits;
   final bool showCursor;
+  final List<StaffMark> marks;
 
   _StaffPainter({
     required this.measure,
-    required this.unitsPerMeasure,
+    required this.showTimeSignature,
     this.playheadUnits,
     required this.showCursor,
+    required this.marks,
   });
 
   static const double _lineSpacing = 10;
@@ -99,7 +142,11 @@ class _StaffPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final staffBottom = size.height / 2 + _lineSpacing * 2;
+    // Everything drawn spans from about 8.1 staff spaces above the bottom
+    // staff line (a triplet's "3") to about 2.7 below it (the marks under
+    // the staff); centring that span, rather than the staff itself, is what
+    // lets it fit in [StaffNotationView.minHeight].
+    final staffBottom = size.height / 2 + _lineSpacing * 2.7;
     final middleLineY = staffBottom - 2 * _lineSpacing;
     final c5Y = staffBottom - 2.5 * _lineSpacing; // third space from bottom
 
@@ -113,9 +160,12 @@ class _StaffPainter extends CustomPainter {
 
     _paintGlyph(canvas, _gClef, _leftPadding, staffBottom - _lineSpacing, _fontSize * 1.1);
 
-    final contentLeft = _leftPadding + _clefWidth;
+    var contentLeft = _leftPadding + _clefWidth;
+    if (showTimeSignature) {
+      contentLeft += _paintTimeSignature(canvas, measure.meter, contentLeft, staffBottom) + 14;
+    }
     final contentWidth = size.width - contentLeft - _rightPadding;
-    final unitsTotal = unitsPerMeasure.toDouble();
+    final unitsTotal = measure.capacityUnits.toDouble();
 
     double xForUnit(double unit) => contentLeft + (unit / unitsTotal) * contentWidth;
 
@@ -161,6 +211,35 @@ class _StaffPainter extends CustomPainter {
       cursorUnit += event.durationUnits;
     }
     markTripletGroup();
+
+    // Shifted half a notehead right of the time-to-position formula, which
+    // gives a note's left edge: an on-time hit then sits centered under its
+    // notehead instead of under its edge.
+    final markY = staffBottom + 2.2 * _lineSpacing;
+    for (final mark in marks) {
+      final center = Offset(xForUnit(mark.units) + _noteheadWidth / 2, markY);
+      if (mark.isAbsence) {
+        const arm = 4.0;
+        final crossPaint = Paint()
+          ..color = mark.color
+          ..strokeWidth = 2;
+        canvas.drawLine(center + const Offset(-arm, -arm), center + const Offset(arm, arm), crossPaint);
+        canvas.drawLine(center + const Offset(-arm, arm), center + const Offset(arm, -arm), crossPaint);
+      } else {
+        canvas.drawCircle(center, 4.5, Paint()..color = mark.color);
+      }
+      final label = mark.label;
+      if (label != null) {
+        final text = TextPainter(
+          text: TextSpan(
+            text: label,
+            style: TextStyle(fontSize: 9, color: mark.color, fontWeight: FontWeight.w600),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        text.paint(canvas, Offset(center.dx - text.width / 2, center.dy + 6));
+      }
+    }
 
     if (showCursor && cursorUnit < unitsTotal) {
       final x = xForUnit(cursorUnit.toDouble());
@@ -213,6 +292,25 @@ class _StaffPainter extends CustomPainter {
     textPainter.paint(canvas, Offset(x, baselineY - baselineOffset));
   }
 
+  /// Draws [meter]'s two numbers stacked in the staff, starting at [left],
+  /// and returns how wide they are. SMuFL's time-signature digits
+  /// (`timeSig0`..`timeSig9`, U+E080..U+E089) are drawn centred on their
+  /// baseline, so each number's baseline goes in the middle of its half of
+  /// the staff.
+  double _paintTimeSignature(Canvas canvas, TimeSignature meter, double left, double staffBottom) {
+    String digits(int number) =>
+        String.fromCharCodes(number.toString().codeUnits.map((digit) => 0xE080 + digit - 0x30));
+    final top = digits(meter.beats);
+    final bottom = digits(meter.beatUnit);
+    final topWidth = _cachedGlyphPainter(top, _fontSize).width;
+    final bottomWidth = _cachedGlyphPainter(bottom, _fontSize).width;
+    final width = topWidth > bottomWidth ? topWidth : bottomWidth;
+    _paintGlyph(canvas, top, left + (width - topWidth) / 2, staffBottom - 3 * _lineSpacing, _fontSize);
+    _paintGlyph(
+        canvas, bottom, left + (width - bottomWidth) / 2, staffBottom - _lineSpacing, _fontSize);
+    return width;
+  }
+
   /// Draws a triplet's "3" centered over [left]..[right] at height [y], with
   /// a bracket out to both ends when the span is wide enough to hold one
   /// (a lone triplet note gets just the numeral).
@@ -249,7 +347,8 @@ class _StaffPainter extends CustomPainter {
   @override
   bool shouldRepaint(_StaffPainter oldDelegate) =>
       oldDelegate.measure != measure ||
-      oldDelegate.unitsPerMeasure != unitsPerMeasure ||
+      oldDelegate.showTimeSignature != showTimeSignature ||
       oldDelegate.playheadUnits != playheadUnits ||
-      oldDelegate.showCursor != showCursor;
+      oldDelegate.showCursor != showCursor ||
+      oldDelegate.marks != marks;
 }

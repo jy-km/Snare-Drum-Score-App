@@ -46,9 +46,7 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
       setState(() {
         _playheadUnits = units;
         if (units != null) {
-          _activeMeasure = (units / _score.unitsPerMeasure)
-              .floor()
-              .clamp(0, _score.measures.length - 1);
+          _activeMeasure = _score.measureIndexAt(units);
         }
       });
     });
@@ -68,8 +66,8 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
   void _appendEvent(NoteValue value) {
     setState(() {
       final measure = _score.measures[_activeMeasure];
-      if (!measure.canAppend(value, _score.unitsPerMeasure)) return;
-      final updated = measure.appendEvent(RhythmEvent(value, _selectedType), _score.unitsPerMeasure);
+      if (!measure.canAppend(value)) return;
+      final updated = measure.appendEvent(RhythmEvent(value, _selectedType));
       _score = _score.copyWithMeasure(_activeMeasure, updated);
     });
   }
@@ -81,22 +79,37 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
     });
   }
 
-  /// Changing the meter changes every measure's capacity, so previously
-  /// entered notes can no longer be assumed to fit -- clearing all measures
-  /// avoids leaving the score in an inconsistent state (content authored
-  /// under the old time signature silently overflowing the new one).
-  Future<void> _changeMeter((int beatsPerMeasure, int beatUnit) meter) async {
-    final (beatsPerMeasure, beatUnit) = meter;
-    if (beatsPerMeasure == _score.beatsPerMeasure && beatUnit == _score.beatUnit) return;
+  /// Sets the time signature from the measure being edited on: earlier
+  /// measures keep theirs, and so does any later measure that already has
+  /// notes (see [RhythmScore.withMeterFrom]). Says what it couldn't change,
+  /// so the effect isn't a surprise.
+  Future<void> _changeMeter(TimeSignature meter) async {
+    final before = _score;
+    final measureIndex = _activeMeasure;
+    if (meter == before.measures[measureIndex].meter) return;
     if (_player.isPlaying) await _player.stop();
-    setState(() {
-      _score = _score.copyWith(
-        beatsPerMeasure: beatsPerMeasure,
-        beatUnit: beatUnit,
-        measures: List.generate(_score.measures.length, (_) => Measure.empty()),
-      );
-      _activeMeasure = 0;
-    });
+    final after = before.withMeterFrom(measureIndex, meter);
+    setState(() => _score = after);
+
+    final notices = <String>[];
+    final dropped = before.measures[measureIndex].events.length -
+        after.measures[measureIndex].events.length;
+    if (dropped > 0) {
+      notices.add('Removed the last $dropped ${dropped == 1 ? 'entry' : 'entries'} of '
+          'measure ${measureIndex + 1}, which no longer fit in $meter.');
+    }
+    final kept = [
+      for (var index = measureIndex + 1; index < after.measures.length; index++)
+        if (after.measures[index].meter != meter) index + 1,
+    ];
+    if (kept.isNotEmpty) {
+      notices.add('${kept.length == 1 ? 'Measure' : 'Measures'} ${kept.join(', ')} '
+          'already ${kept.length == 1 ? 'has' : 'have'} notes and kept '
+          '${kept.length == 1 ? 'its' : 'their'} time signature.');
+    }
+    if (notices.isNotEmpty && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(notices.join(' '))));
+    }
   }
 
   /// Appends a new empty measure and jumps straight to it so the user can
@@ -152,12 +165,16 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
   @override
   Widget build(BuildContext context) {
     final measure = _score.measures[_activeMeasure];
-    final measureStartUnits = _activeMeasure * _score.unitsPerMeasure;
+    final measureStarts = _score.measureStartUnits;
+    final measureStartUnits = measureStarts[_activeMeasure];
     final playheadInMeasure = _playheadUnits != null &&
             _playheadUnits! >= measureStartUnits &&
-            _playheadUnits! < measureStartUnits + _score.unitsPerMeasure
+            _playheadUnits! < measureStarts[_activeMeasure + 1]
         ? _playheadUnits! - measureStartUnits
         : null;
+    // Printed where the time signature starts or changes, as in sheet music.
+    final showTimeSignature =
+        _activeMeasure == 0 || _score.measures[_activeMeasure - 1].meter != measure.meter;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Edit Rhythm')),
@@ -183,8 +200,7 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
                   ),
                   const Spacer(),
                   _MeterButton(
-                    beatsPerMeasure: _score.beatsPerMeasure,
-                    beatUnit: _score.beatUnit,
+                    meter: measure.meter,
                     onSelect: _changeMeter,
                   ),
                 ],
@@ -208,12 +224,12 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
               const SizedBox(height: 12),
               StaffNotationView(
                 measure: measure,
-                unitsPerMeasure: _score.unitsPerMeasure,
+                showTimeSignature: showTimeSignature,
                 playheadUnits: playheadInMeasure,
                 showCursor: !_player.isPlaying,
               ),
               const SizedBox(height: 4),
-              Text('${measure.filledUnits}/${_score.unitsPerMeasure} units filled'),
+              Text('${measure.filledUnits}/${measure.capacityUnits} units filled'),
               const SizedBox(height: 12),
               _TypeSelector(
                 selected: _selectedType,
@@ -225,28 +241,28 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
                   _DurationButton(
                     keyName: 'duration_quarter',
                     label: '1/4',
-                    enabled: measure.canAppend(NoteValue.quarter, _score.unitsPerMeasure),
+                    enabled: measure.canAppend(NoteValue.quarter),
                     onTap: () => _appendEvent(NoteValue.quarter),
                   ),
                   const SizedBox(width: 8),
                   _DurationButton(
                     keyName: 'duration_eighth',
                     label: '1/8',
-                    enabled: measure.canAppend(NoteValue.eighth, _score.unitsPerMeasure),
+                    enabled: measure.canAppend(NoteValue.eighth),
                     onTap: () => _appendEvent(NoteValue.eighth),
                   ),
                   const SizedBox(width: 8),
                   _DurationButton(
                     keyName: 'duration_sixteenth',
                     label: '1/16',
-                    enabled: measure.canAppend(NoteValue.sixteenth, _score.unitsPerMeasure),
+                    enabled: measure.canAppend(NoteValue.sixteenth),
                     onTap: () => _appendEvent(NoteValue.sixteenth),
                   ),
                   const SizedBox(width: 8),
                   _DurationButton(
                     keyName: 'duration_eighth_triplet',
                     label: 'Triplet',
-                    enabled: measure.canAppend(NoteValue.eighthTriplet, _score.unitsPerMeasure),
+                    enabled: measure.canAppend(NoteValue.eighthTriplet),
                     onTap: () => _appendEvent(NoteValue.eighthTriplet),
                   ),
                   const SizedBox(width: 8),
@@ -284,25 +300,22 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
   }
 }
 
-/// A button labeled "Meter: #/#" that opens a popup list of every meter in
-/// both denominator families ([RhythmGrid.beatUnits]) to choose from, rather
-/// than one button per meter.
+/// A button labeled "Meter: #/#" -- the time signature of the measure being
+/// edited -- that opens a popup list of every meter in both denominator
+/// families ([RhythmGrid.beatUnits]) to choose from, rather than one button
+/// per meter. Choosing one applies from that measure on (see
+/// `_changeMeter`).
 class _MeterButton extends StatelessWidget {
-  final int beatsPerMeasure;
-  final int beatUnit;
-  final ValueChanged<(int, int)> onSelect;
+  final TimeSignature meter;
+  final ValueChanged<TimeSignature> onSelect;
 
-  const _MeterButton({
-    required this.beatsPerMeasure,
-    required this.beatUnit,
-    required this.onSelect,
-  });
+  const _MeterButton({required this.meter, required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<(int, int)>(
+    return PopupMenuButton<TimeSignature>(
       key: const Key('meter_button'),
-      tooltip: 'Change meter',
+      tooltip: 'Change the meter from this measure on',
       onSelected: onSelect,
       itemBuilder: (context) => [
         for (final unit in RhythmGrid.beatUnits) ...[
@@ -310,9 +323,9 @@ class _MeterButton extends StatelessWidget {
           for (var beats = RhythmGrid.minBeatsPerMeasure;
               beats <= RhythmGrid.maxBeatsPerMeasureFor(unit);
               beats++)
-            PopupMenuItem<(int, int)>(
+            PopupMenuItem<TimeSignature>(
               key: Key('meter_option_${beats}_$unit'),
-              value: (beats, unit),
+              value: TimeSignature(beats, unit),
               child: Text('$beats/$unit'),
             ),
         ],
@@ -323,7 +336,7 @@ class _MeterButton extends StatelessWidget {
           border: Border.all(color: Theme.of(context).colorScheme.outline),
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Text('Meter: $beatsPerMeasure/$beatUnit'),
+        child: Text('Meter: $meter'),
       ),
     );
   }

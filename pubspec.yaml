@@ -37,6 +37,8 @@ dependencies:
   dart_midi_pro: ^1.0.4+2
   path_provider: ^2.1.6
   audioplayers: ^6.8.1
+  record: ^7.1.1
+  clock: ^1.1.3
 
 dev_dependencies:
   flutter_test:

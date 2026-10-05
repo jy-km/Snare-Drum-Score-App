@@ -147,11 +147,13 @@ class ClickSound {
   }
 
   /// Wraps mono 16-bit PCM [samples] in a standard WAV (RIFF) header.
-  static Uint8List pcm16ToWav(Int16List samples) {
+  /// [rate] is the samples' sample rate -- [sampleRate] for everything this
+  /// app renders itself; a mic recording may come back at a different one.
+  static Uint8List pcm16ToWav(Int16List samples, {int rate = sampleRate}) {
     const numChannels = 1;
     const bitsPerSample = 16;
     final dataSize = samples.length * 2;
-    final byteRate = sampleRate * numChannels * bitsPerSample ~/ 8;
+    final byteRate = rate * numChannels * bitsPerSample ~/ 8;
     final blockAlign = numChannels * bitsPerSample ~/ 8;
 
     final byteData = ByteData(44 + dataSize);
@@ -169,7 +171,7 @@ class ClickSound {
     byteData.setUint32(16, 16, Endian.little);
     byteData.setUint16(20, 1, Endian.little); // PCM
     byteData.setUint16(22, numChannels, Endian.little);
-    byteData.setUint32(24, sampleRate, Endian.little);
+    byteData.setUint32(24, rate, Endian.little);
     byteData.setUint32(28, byteRate, Endian.little);
     byteData.setUint16(32, blockAlign, Endian.little);
     byteData.setUint16(34, bitsPerSample, Endian.little);

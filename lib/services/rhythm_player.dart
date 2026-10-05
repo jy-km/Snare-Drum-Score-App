@@ -64,7 +64,7 @@ class RhythmPlayer {
 
     final tempoBpm = tempoBpmOverride ?? score.tempoBpm;
     _msPerUnit = 60000 / tempoBpm / RhythmGrid.unitsPerQuarterNote;
-    _totalUnits = score.measures.length * score.unitsPerMeasure;
+    _totalUnits = score.totalUnits;
     final normalSamples = await ClickSound.normalSamples(score.instrument);
     final accentSamples = await ClickSound.accentSamples(score.instrument);
     final wavBytes = _renderSequence(
@@ -133,7 +133,8 @@ class RhythmPlayer {
     // small fraction of a beat, so a per-unit rounding error would add up
     // across the whole score and drift the audio away from the playhead.
     final samplesPerUnit = ClickSound.sampleRate * msPerUnit / 1000;
-    final totalUnits = score.measures.length * score.unitsPerMeasure;
+    final totalUnits = score.totalUnits;
+    final measureStarts = score.measureStartUnits;
     final tailLength = normalSamples.length > accentSamples.length
         ? normalSamples.length
         : accentSamples.length;
@@ -141,7 +142,7 @@ class RhythmPlayer {
 
     for (var measureIndex = 0; measureIndex < score.measures.length; measureIndex++) {
       final measure = score.measures[measureIndex];
-      var unitCursor = measureIndex * score.unitsPerMeasure;
+      var unitCursor = measureStarts[measureIndex];
 
       for (final event in measure.events) {
         if (!event.isRest) {
