@@ -5,8 +5,13 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:snare_drum_score_app/models/rhythm_score.dart';
 import 'package:snare_drum_score_app/screens/practice_screen.dart';
+import 'package:snare_drum_score_app/services/app_settings.dart';
+import 'package:snare_drum_score_app/services/hit_judge.dart';
+import 'package:snare_drum_score_app/widgets/judgement_style.dart';
+import 'package:snare_drum_score_app/widgets/settings_scope.dart';
 import 'package:snare_drum_score_app/widgets/staff_notation_view.dart';
 
+import 'support/fake_history.dart';
 import 'support/fake_mic.dart';
 import 'support/synth_audio.dart';
 
@@ -18,16 +23,23 @@ void main() {
     FakeMicInput? mic,
     FakeMicLatencyStore? latencyStore,
     FakeMicCalibrationStore? calibrationStore,
+    AppSettings? settings,
+    String? scoreId,
+    InMemoryPracticeHistoryStore? historyStore,
   }) async {
     score ??= RhythmScore.empty(title: 'Practice Test', tempoBpm: tempoBpm);
     mic ??= FakeMicInput();
+    final appSettings = settings ?? AppSettings();
     await tester.pumpWidget(
       MaterialApp(
+        builder: (context, child) => SettingsScope(settings: appSettings, child: child!),
         home: PracticeScreen(
           score: score,
           createMicInput: () => mic!,
           latencyStore: latencyStore ?? FakeMicLatencyStore(),
           calibrationStore: calibrationStore ?? FakeMicCalibrationStore(),
+          scoreId: scoreId,
+          historyStore: historyStore,
         ),
       ),
     );
@@ -180,6 +192,33 @@ void main() {
     expect(find.text('Playing'), findsOneWidget, reason: 'measure 3 is still going');
     await tester.pumpAndSettle(const Duration(milliseconds: 100));
     expect(find.text('Done'), findsOneWidget);
+  });
+
+  testWidgets('A 6/8 score counts in six eighth notes', (tester) async {
+    // At 60 BPM an eighth note lasts half a second: the count-in is 3s.
+    final score = RhythmScore.empty(
+      title: 'Six Eight',
+      tempoBpm: 60,
+      meter: const TimeSignature(6, 8),
+    );
+    await pumpPractice(tester, score: score);
+
+    final countIn = tester
+        .widget<StaffNotationView>(find.descendant(
+          of: find.byKey(const Key('practice_slot_a')),
+          matching: find.byType(StaffNotationView),
+        ))
+        .measure;
+    expect(countIn.events.length, 6);
+    expect(countIn.events.every((e) => e.value == NoteValue.eighth), isTrue);
+
+    await tapButton(tester, const Key('practice_start_button'));
+    await tester.pump();
+    await tester.pump(fallbackDelay);
+    await tester.pump(const Duration(milliseconds: 2900));
+    expect(find.text('Get ready...'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.text('Playing'), findsOneWidget);
   });
 
   group('On a phone-sized screen, a run shows everything without scrolling', () {
@@ -376,6 +415,54 @@ void main() {
       expect(marks[1].label, matches(RegExp(r'^\+(5[2-9]|6[0-8])$')), reason: '~60ms late');
     });
 
+    testWidgets('A finished judged run is saved to its track\'s practice history, with a note',
+        (tester) async {
+      final mic = FakeMicInput();
+      final history = InMemoryPracticeHistoryStore();
+      await pumpPractice(
+        tester,
+        score: fourQuarters(),
+        mic: mic,
+        scoreId: 'Judged_1',
+        historyStore: history,
+      );
+      await startRun(tester);
+      await hearUntil(tester, mic, recording, 7.7);
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // Perfect, Great, Good and a Miss: (100 + 75 + 50 + 0) / 4 = 56%.
+      expect(find.textContaining('Accuracy 56%'), findsOneWidget);
+
+      final run = (await history.runsFor('Judged_1')).single;
+      expect(run.tempoBpm, 60);
+      expect(run.accuracy, closeTo(0.5625, 1e-9));
+      final review = await history.loadReview(run);
+      expect(review.judgements.length, 4, reason: 'the whole analysis is kept for review');
+
+      await tapButton(tester, const Key('practice_note_button'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('run_note_field')), 'felt rushed');
+      await tester.tap(find.byKey(const Key('run_note_save')));
+      await tester.pumpAndSettle();
+
+      expect((await history.runsFor('Judged_1')).single.note, 'felt rushed');
+      expect(find.text('Edit note'), findsOneWidget);
+    });
+
+    testWidgets('Practice with no track to save to offers no note', (tester) async {
+      final mic = FakeMicInput();
+      await pumpPractice(tester, score: fourQuarters(), mic: mic);
+      await startRun(tester);
+      await hearUntil(tester, mic, recording, 7.7);
+      await tester.pumpAndSettle(const Duration(seconds: 1));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.byKey(const Key('practice_review_button')), findsOneWidget);
+      expect(find.byKey(const Key('practice_note_button')), findsNothing);
+      expect(find.textContaining('Accuracy 56%'), findsOneWidget);
+    });
+
     testWidgets('A run that was not judged has nothing to review', (tester) async {
       final mic = FakeMicInput()..permissionGranted = false;
       await pumpPractice(tester, score: fourQuarters(), mic: mic);
@@ -451,6 +538,45 @@ void main() {
         find.text('Perfect 2  ·  Great 0  ·  Good 0  ·  Miss 0  ·  Fail 2'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('With "colour notes by judgement" on, notes take their colour as they are judged',
+        (tester) async {
+      final mic = FakeMicInput();
+      final settings = AppSettings()..colorNotesByJudgement = true;
+      await pumpPractice(tester, score: fourQuarters(), mic: mic, settings: settings);
+      await startRun(tester);
+      Map<int, Color> colorsOfMeasure1() => tester
+          .widget<StaffNotationView>(find.descendant(
+            of: find.ancestor(of: find.text('Measure 1'), matching: find.byType(Column)).first,
+            matching: find.byType(StaffNotationView),
+          ))
+          .eventColors;
+
+      await hearUntil(tester, mic, recording, 3.7);
+      expect(colorsOfMeasure1(), isEmpty, reason: 'nothing judged yet');
+
+      await hearUntil(tester, mic, recording, 4.5);
+      expect(colorsOfMeasure1(), {0: judgementColor(Judgement.perfect)});
+
+      await hearUntil(tester, mic, recording, 7.7);
+      expect(colorsOfMeasure1(), {
+        0: judgementColor(Judgement.perfect),
+        1: judgementColor(Judgement.great),
+        2: judgementColor(Judgement.good),
+        3: judgementColor(Judgement.miss),
+      });
+    });
+
+    testWidgets('With the mode off (the default), notes stay black', (tester) async {
+      final mic = FakeMicInput();
+      await pumpPractice(tester, score: fourQuarters(), mic: mic);
+      await startRun(tester);
+
+      await hearUntil(tester, mic, recording, 7.7);
+
+      final staffs = tester.widgetList<StaffNotationView>(find.byType(StaffNotationView));
+      expect(staffs.every((staff) => staff.eventColors.isEmpty), isTrue);
     });
 
     testWidgets('Each hit is marked under the staff where it landed', (tester) async {

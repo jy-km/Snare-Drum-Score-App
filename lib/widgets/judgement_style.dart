@@ -37,7 +37,9 @@ bool _showsDirection(JudgedHit hit) =>
 Color judgementColor(Judgement judgement) {
   switch (judgement) {
     case Judgement.perfect:
-      return Colors.amber.shade800;
+      // Yellow, darkened enough to read on a light background (Material's
+      // stock yellows are either too pale for that or lean orange).
+      return const Color(0xFFD4A900);
     case Judgement.great:
       return Colors.green.shade700;
     case Judgement.good:
@@ -49,6 +51,36 @@ Color judgementColor(Judgement judgement) {
       // Miss's red even at a glance.
       return const Color(0xFF8E0E3A);
   }
+}
+
+/// The colour each judged note should be drawn in, for the "colour notes by
+/// judgement" setting: by timeline measure, then by event index within it
+/// (as [StaffNotationView.eventColors] takes them). A note takes its
+/// judgement's colour; a rest that was played in (a Fail) turns the Fail
+/// colour. Notes not judged yet are left out, and stay black.
+Map<int, Map<int, Color>> judgementEventColors(
+  Iterable<JudgedHit> judgements, {
+  required TimelineLayout layout,
+  required double secondsPerUnit,
+}) {
+  final colors = <int, Map<int, Color>>{};
+  for (final hit in judgements) {
+    final noteIndex = hit.noteIndex;
+    if (noteIndex != null) {
+      final (measure, event) = layout.noteEvents[noteIndex];
+      (colors[measure] ??= {})[event] = judgementColor(hit.judgement);
+      continue;
+    }
+    final hitTime = hit.hitTimeSeconds;
+    if (hit.judgement != Judgement.fail || hitTime == null) continue;
+    final units = hitTime / secondsPerUnit;
+    final measure = layout.indexAt(units);
+    if (measure == 0) continue; // the count-in has no rests
+    final event = layout.eventAt(measure, units - layout.starts[measure]);
+    if (event == null || !layout.measureAt(measure).events[event].isRest) continue;
+    (colors[measure] ??= {})[event] = judgementColor(Judgement.fail);
+  }
+  return colors;
 }
 
 /// A hit's signed timing error in whole milliseconds, e.g. "+62 ms" (late)

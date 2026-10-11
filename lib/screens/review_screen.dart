@@ -6,8 +6,10 @@ import 'package:flutter/material.dart';
 
 import '../services/click_sound.dart';
 import '../services/hit_judge.dart';
+import '../services/practice_history.dart';
 import '../services/run_review.dart';
 import '../widgets/judgement_style.dart';
+import '../widgets/settings_scope.dart';
 import '../widgets/staff_notation_view.dart';
 
 /// Goes back over a judged practice run: every measure with each hit marked
@@ -17,7 +19,14 @@ import '../widgets/staff_notation_view.dart';
 class ReviewScreen extends StatefulWidget {
   final RunReview review;
 
-  const ReviewScreen({super.key, required this.review});
+  /// A line identifying the run, e.g. when it was played and how fast --
+  /// for a run opened from the practice history.
+  final String? heading;
+
+  /// The player's note about the run, if any.
+  final String note;
+
+  const ReviewScreen({super.key, required this.review, this.heading, this.note = ''});
 
   @override
   State<ReviewScreen> createState() => _ReviewScreenState();
@@ -34,6 +43,11 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
   final _player = AudioPlayer(playerId: 'review_replay');
   late final AnimationController _replay;
   late final Map<int, List<StaffMark>> _marks = _buildMarks();
+  late final Map<int, Map<int, Color>> _noteColors = judgementEventColors(
+    _review.judgements,
+    layout: _review.layout,
+    secondsPerUnit: _review.secondsPerUnit,
+  );
   late final List<GlobalKey> _measureKeys =
       List.generate(widget.review.layout.measureCount, (_) => GlobalKey());
 
@@ -162,6 +176,9 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
     final textTheme = Theme.of(context).textTheme;
     final layout = _review.layout;
     final mostOff = _review.mostOff();
+    final noteColors = SettingsScope.of(context).colorNotesByJudgement
+        ? _noteColors
+        : const <int, Map<int, Color>>{};
     final missed = _review.missedNotes;
 
     return Scaffold(
@@ -182,6 +199,29 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                   style: textTheme.titleMedium,
                 ),
               ),
+              if (widget.heading != null)
+                Text(
+                  widget.heading!,
+                  key: const Key('review_heading'),
+                  textAlign: TextAlign.center,
+                  style: textTheme.bodySmall,
+                ),
+              if (runAccuracy(_review.counts) case final accuracy?)
+                Text(
+                  'Accuracy ${accuracyText(accuracy)}',
+                  key: const Key('review_accuracy'),
+                  textAlign: TextAlign.center,
+                  style: textTheme.titleSmall,
+                ),
+              if (widget.note.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '"${widget.note}"',
+                  key: const Key('review_note'),
+                  textAlign: TextAlign.center,
+                  style: textTheme.bodyMedium?.copyWith(fontStyle: FontStyle.italic),
+                ),
+              ],
               if (_review.timingEstimated)
                 Text(
                   'The count-in wasn\'t heard on this run, so its timing was estimated.',
@@ -237,6 +277,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                             ? _replayUnits - layout.starts[index]
                             : null,
                         marks: _marks[index] ?? const [],
+                        eventColors: noteColors[index] ?? const {},
                       ),
                     ],
                   ),

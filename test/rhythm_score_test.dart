@@ -139,4 +139,61 @@ void main() {
 
     expect(score.restSpanUnits, isEmpty);
   });
+
+  group('Editing inside a measure', () {
+    final measure = Measure(const [
+      RhythmEvent(NoteValue.quarter, EventType.normal),
+      RhythmEvent(NoteValue.eighth, EventType.accent),
+      RhythmEvent(NoteValue.quarter, EventType.rest),
+    ]); // 2.5 of 4 beats
+
+    test('replaceAt swaps one event, keeping the rest in order', () {
+      expect(
+        measure.replaceAt(1, const RhythmEvent(NoteValue.quarter, EventType.normal)).events,
+        const [
+          RhythmEvent(NoteValue.quarter, EventType.normal),
+          RhythmEvent(NoteValue.quarter, EventType.normal),
+          RhythmEvent(NoteValue.quarter, EventType.rest),
+        ],
+      );
+    });
+
+    test('canReplace allows only what still fits', () {
+      expect(measure.canReplace(1, NoteValue.quarter), isTrue); // 3 beats
+      final full = measure.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal))
+          .removeLast()
+          .appendEvent(const RhythmEvent(NoteValue.eighth, EventType.normal))
+          .appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal)); // 4 beats
+      expect(full.canReplace(1, NoteValue.quarter), isFalse);
+      expect(full.canReplace(1, NoteValue.sixteenth), isTrue);
+    });
+
+    test('removeAt drops one event and closes the gap', () {
+      expect(measure.removeAt(0).events, const [
+        RhythmEvent(NoteValue.eighth, EventType.accent),
+        RhythmEvent(NoteValue.quarter, EventType.rest),
+      ]);
+      expect(measure.removeAt(0).meter, measure.meter);
+    });
+  });
+
+  test('removeMeasure drops one measure; the ones after move up', () {
+    final second = Measure(const [RhythmEvent(NoteValue.quarter, EventType.normal)]);
+    final score = RhythmScore.empty(measuresCount: 3).copyWithMeasure(1, second);
+
+    final removed = score.removeMeasure(0);
+
+    expect(removed.measures.length, 2);
+    expect(removed.measures.first, second);
+  });
+
+  test('Eighth-note meters: a beat is an eighth note', () {
+    const sixEight = TimeSignature(6, 8);
+    expect(sixEight.isValid, isTrue);
+    expect(sixEight.unitsPerBeat, NoteValue.eighth.units);
+    expect(sixEight.units, 36); // same length as 3/4
+    expect(const TimeSignature(16, 8).isValid, isTrue);
+    expect(const TimeSignature(17, 8).isValid, isFalse);
+    expect(const TimeSignature(4, 16).isValid, isFalse, reason: 'sixteenths not offered');
+  });
 }

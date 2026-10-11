@@ -67,5 +67,5 @@ class RunReview {
   }
 
   /// Which timeline measure a judged note is in (count-in = 0).
-  int timelineMeasureOf(JudgedHit hit) => layout.noteLocations[hit.noteIndex!].$1;
+  int timelineMeasureOf(JudgedHit hit) => layout.noteEvents[hit.noteIndex!].$1;
 }

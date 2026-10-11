@@ -37,6 +37,20 @@ class StaffNotationView extends StatelessWidget {
   /// height is split evenly above and below.
   final double height;
 
+  /// Which of [measure]'s events to highlight as selected, if any.
+  final int? selectedEventIndex;
+
+  /// Colours for individual events (by index into [measure]'s events),
+  /// drawn instead of black -- e.g. each note in the colour of the
+  /// judgement it got. Events not listed stay black. A new map must be
+  /// passed for a change to be drawn.
+  final Map<int, Color> eventColors;
+
+  /// Called when the staff is tapped: with the index of the event tapped,
+  /// or null for a tap where there is none (e.g. the empty end of the
+  /// measure). Without it, the staff doesn't respond to taps.
+  final ValueChanged<int?>? onTapEvent;
+
   static const double defaultHeight = 140;
   static const double minHeight = 112;
 
@@ -48,22 +62,72 @@ class StaffNotationView extends StatelessWidget {
     this.showCursor = false,
     this.marks = const [],
     this.height = defaultHeight,
+    this.selectedEventIndex,
+    this.onTapEvent,
+    this.eventColors = const {},
   }) : assert(height >= minHeight);
+
+  /// Where, across a staff [width] wide, position [units] within [measure]
+  /// is drawn -- the left edge of a note starting there. The one formula
+  /// notes, the playhead, marks and taps all go by.
+  static double xForUnits(
+    Measure measure, {
+    required bool showTimeSignature,
+    required double width,
+    required double units,
+  }) {
+    final contentLeft = _StaffPainter.contentLeftFor(measure, showTimeSignature);
+    final contentWidth = width - contentLeft - _StaffPainter._rightPadding;
+    return contentLeft + units / measure.capacityUnits * contentWidth;
+  }
+
+  /// Which event a tap at [dx] lands on: the one whose stretch of the staff
+  /// contains it -- or null past the last event.
+  int? _eventIndexAt(double dx, double width) {
+    var start = 0;
+    for (var index = 0; index < measure.events.length; index++) {
+      final end = start + measure.events[index].durationUnits;
+      // A note's stretch begins a little before its left edge, where its
+      // notehead starts to read as "this note" to a finger.
+      final left = xForUnits(measure,
+              showTimeSignature: showTimeSignature, width: width, units: start.toDouble()) -
+          _StaffPainter._tapSlop;
+      final right = xForUnits(measure,
+              showTimeSignature: showTimeSignature, width: width, units: end.toDouble()) -
+          _StaffPainter._tapSlop;
+      if (dx >= left && dx < right) return index;
+      start = end;
+    }
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final staff = CustomPaint(
+      painter: _StaffPainter(
+        measure: measure,
+        showTimeSignature: showTimeSignature,
+        playheadUnits: playheadUnits,
+        showCursor: showCursor,
+        marks: marks,
+        selectedEventIndex: selectedEventIndex,
+        eventColors: eventColors,
+      ),
+    );
+    final onTap = onTapEvent;
     return SizedBox(
       height: height,
       width: double.infinity,
-      child: CustomPaint(
-        painter: _StaffPainter(
-          measure: measure,
-          showTimeSignature: showTimeSignature,
-          playheadUnits: playheadUnits,
-          showCursor: showCursor,
-          marks: marks,
-        ),
-      ),
+      child: onTap == null
+          ? staff
+          : LayoutBuilder(
+              builder: (context, constraints) => GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) =>
+                    onTap(_eventIndexAt(details.localPosition.dx, constraints.maxWidth)),
+                child: staff,
+              ),
+            ),
     );
   }
 }
@@ -99,6 +163,8 @@ class _StaffPainter extends CustomPainter {
   final double? playheadUnits;
   final bool showCursor;
   final List<StaffMark> marks;
+  final int? selectedEventIndex;
+  final Map<int, Color> eventColors;
 
   _StaffPainter({
     required this.measure,
@@ -106,7 +172,23 @@ class _StaffPainter extends CustomPainter {
     this.playheadUnits,
     required this.showCursor,
     required this.marks,
+    this.selectedEventIndex,
+    this.eventColors = const {},
   });
+
+  /// How far left of a note's drawn edge its tappable (and highlighted)
+  /// stretch starts.
+  static const double _tapSlop = 4;
+
+  /// Where notes start being drawn: after the clef, and the time signature
+  /// if shown.
+  static double contentLeftFor(Measure measure, bool showTimeSignature) {
+    var left = _leftPadding + _clefWidth;
+    if (showTimeSignature) left += _timeSignatureWidth(measure.meter) + _timeSignatureGap;
+    return left;
+  }
+
+  static const double _timeSignatureGap = 14;
 
   static const double _lineSpacing = 10;
   static const double _clefWidth = 44;
@@ -160,14 +242,35 @@ class _StaffPainter extends CustomPainter {
 
     _paintGlyph(canvas, _gClef, _leftPadding, staffBottom - _lineSpacing, _fontSize * 1.1);
 
-    var contentLeft = _leftPadding + _clefWidth;
     if (showTimeSignature) {
-      contentLeft += _paintTimeSignature(canvas, measure.meter, contentLeft, staffBottom) + 14;
+      _paintTimeSignature(canvas, measure.meter, _leftPadding + _clefWidth, staffBottom);
     }
-    final contentWidth = size.width - contentLeft - _rightPadding;
     final unitsTotal = measure.capacityUnits.toDouble();
 
-    double xForUnit(double unit) => contentLeft + (unit / unitsTotal) * contentWidth;
+    double xForUnit(double unit) => StaffNotationView.xForUnits(
+          measure,
+          showTimeSignature: showTimeSignature,
+          width: size.width,
+          units: unit,
+        );
+
+    final selected = selectedEventIndex;
+    if (selected != null && selected < measure.events.length) {
+      final start = measure.events
+          .take(selected)
+          .fold<int>(0, (sum, event) => sum + event.durationUnits);
+      final end = start + measure.events[selected].durationUnits;
+      canvas.drawRRect(
+        RRect.fromLTRBR(
+          xForUnit(start.toDouble()) - _tapSlop,
+          staffBottom - 7 * _lineSpacing,
+          xForUnit(end.toDouble()) - _tapSlop,
+          staffBottom + 1.5 * _lineSpacing,
+          const Radius.circular(6),
+        ),
+        Paint()..color = Colors.blue.withValues(alpha: 0.18),
+      );
+    }
 
     // X-positions of the triplet group currently being collected: consecutive
     // triplet events, marked with a "3" once three are in (or once the run
@@ -186,7 +289,7 @@ class _StaffPainter extends CustomPainter {
     }
 
     var cursorUnit = 0;
-    for (final event in measure.events) {
+    for (final (eventIndex, event) in measure.events.indexed) {
       final x = xForUnit(cursorUnit.toDouble());
       if (event.value == NoteValue.eighthTriplet) {
         tripletGroupXs.add(x);
@@ -194,10 +297,11 @@ class _StaffPainter extends CustomPainter {
       } else {
         markTripletGroup();
       }
+      final color = eventColors[eventIndex] ?? _ink;
       if (event.isRest) {
-        _paintGlyph(canvas, _restGlyphs[event.value]!, x, middleLineY, _fontSize);
+        _paintGlyph(canvas, _restGlyphs[event.value]!, x, middleLineY, _fontSize, color: color);
       } else {
-        _paintGlyph(canvas, _noteGlyphs[event.value]!, x, c5Y, _fontSize);
+        _paintGlyph(canvas, _noteGlyphs[event.value]!, x, c5Y, _fontSize, color: color);
         if (event.type == EventType.accent) {
           _paintGlyph(
             canvas,
@@ -205,6 +309,7 @@ class _StaffPainter extends CustomPainter {
             x,
             c5Y - _lineSpacing * 2.5,
             _fontSize * 0.7,
+            color: color,
           );
         }
       }
@@ -273,21 +378,30 @@ class _StaffPainter extends CustomPainter {
   // (no glyphs to lay out) stays smooth.
   static final Map<String, TextPainter> _glyphCache = {};
 
-  TextPainter _cachedGlyphPainter(String glyph, double fontSize) {
-    final key = '$glyph@$fontSize';
+  static const Color _ink = Colors.black87;
+
+  static TextPainter _cachedGlyphPainter(String glyph, double fontSize, {Color color = _ink}) {
+    final key = '$glyph@$fontSize@${color.toARGB32()}';
     return _glyphCache.putIfAbsent(key, () {
       return TextPainter(
         text: TextSpan(
           text: glyph,
-          style: TextStyle(fontFamily: 'Bravura', fontSize: fontSize, color: Colors.black87),
+          style: TextStyle(fontFamily: 'Bravura', fontSize: fontSize, color: color),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
     });
   }
 
-  void _paintGlyph(Canvas canvas, String glyph, double x, double baselineY, double fontSize) {
-    final textPainter = _cachedGlyphPainter(glyph, fontSize);
+  void _paintGlyph(
+    Canvas canvas,
+    String glyph,
+    double x,
+    double baselineY,
+    double fontSize, {
+    Color color = _ink,
+  }) {
+    final textPainter = _cachedGlyphPainter(glyph, fontSize, color: color);
     final baselineOffset = textPainter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
     textPainter.paint(canvas, Offset(x, baselineY - baselineOffset));
   }
@@ -297,14 +411,22 @@ class _StaffPainter extends CustomPainter {
   /// (`timeSig0`..`timeSig9`, U+E080..U+E089) are drawn centred on their
   /// baseline, so each number's baseline goes in the middle of its half of
   /// the staff.
+  static String _timeSignatureDigits(int number) =>
+      String.fromCharCodes(number.toString().codeUnits.map((digit) => 0xE080 + digit - 0x30));
+
+  static double _timeSignatureWidth(TimeSignature meter) {
+    final topWidth = _cachedGlyphPainter(_timeSignatureDigits(meter.beats), _fontSize).width;
+    final bottomWidth =
+        _cachedGlyphPainter(_timeSignatureDigits(meter.beatUnit), _fontSize).width;
+    return topWidth > bottomWidth ? topWidth : bottomWidth;
+  }
+
   double _paintTimeSignature(Canvas canvas, TimeSignature meter, double left, double staffBottom) {
-    String digits(int number) =>
-        String.fromCharCodes(number.toString().codeUnits.map((digit) => 0xE080 + digit - 0x30));
-    final top = digits(meter.beats);
-    final bottom = digits(meter.beatUnit);
+    final top = _timeSignatureDigits(meter.beats);
+    final bottom = _timeSignatureDigits(meter.beatUnit);
     final topWidth = _cachedGlyphPainter(top, _fontSize).width;
     final bottomWidth = _cachedGlyphPainter(bottom, _fontSize).width;
-    final width = topWidth > bottomWidth ? topWidth : bottomWidth;
+    final width = _timeSignatureWidth(meter);
     _paintGlyph(canvas, top, left + (width - topWidth) / 2, staffBottom - 3 * _lineSpacing, _fontSize);
     _paintGlyph(
         canvas, bottom, left + (width - bottomWidth) / 2, staffBottom - _lineSpacing, _fontSize);
@@ -350,5 +472,7 @@ class _StaffPainter extends CustomPainter {
       oldDelegate.showTimeSignature != showTimeSignature ||
       oldDelegate.playheadUnits != playheadUnits ||
       oldDelegate.showCursor != showCursor ||
-      oldDelegate.marks != marks;
+      oldDelegate.marks != marks ||
+      oldDelegate.selectedEventIndex != selectedEventIndex ||
+      oldDelegate.eventColors != eventColors;
 }

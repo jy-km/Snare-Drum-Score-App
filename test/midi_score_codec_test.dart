@@ -250,6 +250,34 @@ void main() {
     ]);
   });
 
+  test('Eighth-note meters round-trip through MIDI bytes', () {
+    const sevenEight = TimeSignature(7, 8);
+    const sixEight = TimeSignature(6, 8);
+    final score = RhythmScore(
+      title: 'Odd',
+      tempoBpm: 100,
+      measures: [
+        Measure(
+          List.filled(7, const RhythmEvent(NoteValue.eighth, EventType.normal)),
+          meter: sevenEight,
+        ),
+        Measure(
+          const [
+            RhythmEvent(NoteValue.quarter, EventType.accent),
+            RhythmEvent(NoteValue.quarter, EventType.accent),
+            RhythmEvent(NoteValue.eighth, EventType.normal),
+            RhythmEvent(NoteValue.eighth, EventType.normal),
+          ],
+          meter: sixEight,
+        ),
+      ],
+    );
+
+    final decoded = MidiScoreCodec.decode(MidiScoreCodec.encode(score));
+
+    expect(decoded.measures, equals(score.measures));
+  });
+
   test('A long, dense score round-trips note for note', () {
     // Regression: notes back to back put one note's note-off and the next
     // one's note-on on the same tick, and with enough events List.sort (not

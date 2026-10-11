@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 /// eighth-note triplet (4 units) are whole numbers. The time signature is
 /// per-measure (see [TimeSignature]) -- numerator within
 /// [minBeatsPerMeasure]..[maxBeatsPerMeasureFor], denominator one of
-/// [beatUnits] (quarter-note or half-note beats). The number of measures is
+/// [beatUnits] (quarter-, half- or eighth-note beats). The number of measures is
 /// also per-score and growable (see
 /// [RhythmScore.appendMeasure]); [defaultMeasuresCount] is only the starting
 /// count for a newly created score.
@@ -21,12 +21,13 @@ class RhythmGrid {
   static const int unitsPerWholeNote = 4 * unitsPerQuarterNote;
 
   /// Valid time-signature denominators: a quarter-note beat (4, the
-  /// original/default) or a half-note beat (2).
-  static const List<int> beatUnits = [4, 2];
+  /// original/default), a half-note beat (2) or an eighth-note beat (8).
+  /// Listed in the order the meter menu shows them.
+  static const List<int> beatUnits = [4, 2, 8];
   static const int defaultBeatUnit = 4;
 
-  /// The numerator's upper bound depends on the denominator: 1/4..16/4 for a
-  /// quarter-note beat, 1/2..8/2 for a half-note beat.
+  /// The numerator's upper bound depends on the denominator: 1/4..16/4,
+  /// 1/2..8/2 and 1/8..16/8.
   static int maxBeatsPerMeasureFor(int beatUnit) => beatUnit == 2 ? 8 : maxBeatsPerMeasure;
 
   /// Units for a measure at [defaultBeatsPerMeasure]/[defaultBeatUnit] (4/4).
@@ -192,6 +193,22 @@ class Measure {
     return Measure(events.sublist(0, events.length - 1), meter: meter);
   }
 
+  /// Whether the event at [index] could become [value] long without the
+  /// measure overflowing.
+  bool canReplace(int index, NoteValue value) =>
+      filledUnits - events[index].durationUnits + value.units <= capacityUnits;
+
+  /// This measure with the event at [index] swapped for [event]; everything
+  /// after it moves to make room (or close up).
+  Measure replaceAt(int index, RhythmEvent event) {
+    assert(canReplace(index, event.value));
+    return Measure([...events]..[index] = event, meter: meter);
+  }
+
+  /// This measure without the event at [index]; everything after it moves
+  /// up to close the gap.
+  Measure removeAt(int index) => Measure([...events]..removeAt(index), meter: meter);
+
   /// This measure in [meter] instead, keeping as many of its events, from
   /// the start, as fit the new capacity.
   Measure withMeter(TimeSignature meter) {
@@ -350,6 +367,13 @@ class RhythmScore {
       addSilence(unit, measureStarts[measureIndex + 1]);
     }
     return spans;
+  }
+
+  /// This score without measure [measureIndex]. A score always keeps at
+  /// least one measure.
+  RhythmScore removeMeasure(int measureIndex) {
+    assert(measures.length > 1);
+    return copyWith(measures: [...measures]..removeAt(measureIndex));
   }
 
   /// Appends one new empty measure to the end of the score, in the last

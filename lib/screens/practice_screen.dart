@@ -11,10 +11,14 @@ import '../services/hit_judge.dart';
 import '../services/live_judge.dart';
 import '../services/mic_input.dart';
 import '../services/mic_latency.dart';
+import '../services/practice_history.dart';
 import '../services/practice_slot_assignment.dart';
+import '../services/track_sections.dart';
 import '../services/run_review.dart';
 import '../services/timeline_layout.dart';
 import '../widgets/judgement_style.dart';
+import '../widgets/note_dialog.dart';
+import '../widgets/settings_scope.dart';
 import '../widgets/staff_notation_view.dart';
 import 'review_screen.dart';
 
@@ -51,12 +55,27 @@ class PracticeScreen extends StatefulWidget {
   /// Where the sound delay the player measured in calibration mode is kept.
   final MicCalibrationStore calibrationStore;
 
+  /// The track (score file) being practised: each judged run is saved to
+  /// its practice history. Null (e.g. in tests) saves nothing.
+  final String? scoreId;
+
+  /// Where runs are saved; by default the app's files.
+  final PracticeHistoryStore? historyStore;
+
+  /// Set when [score] is a section of the track [scoreId] rather than the
+  /// whole of it: measures are numbered as in the track, and runs are saved
+  /// to the track's history marked with the section.
+  final TrackSection? section;
+
   const PracticeScreen({
     super.key,
     required this.score,
     this.createMicInput = DeviceMicInput.new,
     this.latencyStore = const FileMicLatencyStore(),
     this.calibrationStore = const FileMicCalibrationStore(),
+    this.scoreId,
+    this.historyStore,
+    this.section,
   });
 
   @override
@@ -71,7 +90,10 @@ class _PracticeScreenState extends State<PracticeScreen>
 
   /// How the count-in and the score's measures sit on one timeline -- the
   /// same layout the review screen replays a run on.
-  late final _layout = TimelineLayout(widget.score);
+  late final _layout = TimelineLayout(
+    widget.score,
+    firstMeasureNumber: (widget.section?.firstMeasure ?? 0) + 1,
+  );
 
   int get _timelineMeasureCount => _layout.measureCount;
   TimeSignature get _countInMeter => _layout.countInMeter;
@@ -149,6 +171,18 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// The finished run, ready to go over on the review screen -- set only
   /// for a run that was judged.
   RunReview? _review;
+
+  late final PracticeHistoryStore _history = widget.historyStore ?? FilePracticeHistoryStore();
+
+  /// When the current run started, for its history record.
+  DateTime? _runStartedAt;
+
+  /// The finished run being saved to the practice history (null for a run
+  /// that isn't saved).
+  Future<PracticeRun?>? _savedRun;
+
+  /// The player's note about the finished run.
+  String _runNote = '';
 
   /// This phone's sound delay as measured on earlier runs (see
   /// [MicLatencyHistory]), and as measured on this one once it's over.
@@ -242,6 +276,7 @@ class _PracticeScreenState extends State<PracticeScreen>
       _recordingClock = RecordingClock();
       _recording.clear();
       _runJudgements.clear();
+      _noteColorsJudgementCount = -1; // a new run: recolour from scratch
       _mic = mic;
       _micSubscription = chunks.listen(
         _onMicSamples,
@@ -360,6 +395,45 @@ class _PracticeScreenState extends State<PracticeScreen>
       _measuredDelaySeconds = measuredDelay;
       _review = counts == null || sampleRate == null ? null : _buildReview(judge, sampleRate);
     });
+    _saveRun();
+  }
+
+  /// Adds the finished run to its track's practice history.
+  void _saveRun() {
+    final review = _review;
+    final scoreId = widget.scoreId;
+    if (review == null || scoreId == null) return;
+    _savedRun = _history
+        .save(
+          scoreId: scoreId,
+          review: review,
+          tempoBpm: _practiceTempoBpm,
+          startedAt: _runStartedAt ?? clock.now(),
+          section: widget.section == null ? null : RunSection.of(widget.section!),
+        )
+        .then<PracticeRun?>((run) => run)
+        .catchError((Object e) {
+      debugPrint('Could not save the run to the practice history: $e');
+      return null;
+    });
+  }
+
+  /// Asks for a note about the finished run and saves it with the run.
+  Future<void> _editRunNote() async {
+    final note = await showRunNoteDialog(context, initial: _runNote);
+    if (note == null || !mounted) return;
+    setState(() => _runNote = note);
+    final run = await _savedRun;
+    if (run == null) return;
+    try {
+      await _history.updateNote(run, note);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(note.isEmpty ? 'Note removed' : 'Note saved')),
+      );
+    } catch (e) {
+      debugPrint('Could not save the note: $e');
+    }
   }
 
   void _stopListening() {
@@ -480,7 +554,14 @@ class _PracticeScreenState extends State<PracticeScreen>
     _start();
   }
 
+  /// Which run is current: bumped on every start and every stop, so audio
+  /// still being prepared for a run that has since been stopped knows not
+  /// to start playing once it's ready.
+  int _runGeneration = 0;
+
   void _start() {
+    _runGeneration++;
+    _runStartedAt = clock.now();
     _slots.reset();
     setState(() => _phase = _PracticePhase.running);
     _countInAnchor = null;
@@ -497,8 +578,11 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   Future<void> _playTimelineAudio() async {
+    final generation = _runGeneration;
     try {
       final timelineBytes = await _renderTimelineAudio();
+      // Rendering takes a moment; Stop may have been pressed meanwhile.
+      if (generation != _runGeneration || !mounted) return;
       await _clickPlayer.play(BytesSource(timelineBytes));
     } catch (e) {
       // Best-effort: the visual timeline still runs via the fallback timer
@@ -536,6 +620,12 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   void _returnToIdle() {
+    // Stop means stop: the run's audio (the count-in, and the whole rhythm
+    // when "Play rhythm sound" is on) would otherwise play on to its end.
+    _runGeneration++;
+    unawaited(_clickPlayer.stop().catchError((Object e) {
+      debugPrint('Practice audio failed to stop: $e');
+    }));
     _countInPositionSubscription?.cancel();
     _countInPositionSubscription = null;
     _countInFallbackTimer?.cancel();
@@ -554,8 +644,11 @@ class _PracticeScreenState extends State<PracticeScreen>
       _measuredDelaySeconds = null;
       _hitMarks.clear();
       _review = null;
+      _savedRun = null;
+      _runNote = '';
       _recording.clear();
       _runJudgements.clear();
+      _noteColorsJudgementCount = -1; // a new run: recolour from scratch
     });
   }
 
@@ -590,6 +683,14 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// worth saying: by estimate while it's happening, and either way at the
   /// end.
   String? get _alignmentDetail {
+    final counts = _finalCounts;
+    final accuracy = counts == null ? null : runAccuracy(counts);
+    final alignment = _alignmentOnly;
+    if (accuracy == null) return alignment;
+    return 'Accuracy ${accuracyText(accuracy)}${alignment == null ? '' : '  ·  $alignment'}';
+  }
+
+  String? get _alignmentOnly {
     if (_liveJudge?.timingIsEstimated ?? false) {
       return _calibratedDelaySeconds != null
           ? 'Count-in not heard. Timing from your calibration.'
@@ -615,6 +716,9 @@ class _PracticeScreenState extends State<PracticeScreen>
           final playing = _phase != _PracticePhase.idle;
           final staffHeight =
               playing ? _staffHeightToFit(constraints.maxHeight) : StaffNotationView.defaultHeight;
+          final noteColors = SettingsScope.of(context).colorNotesByJudgement
+              ? _noteColors()
+              : const <int, Map<int, Color>>{};
           return SingleChildScrollView(
             padding: EdgeInsets.symmetric(horizontal: 16, vertical: playing ? 8 : 16),
             child: Column(
@@ -674,6 +778,7 @@ class _PracticeScreenState extends State<PracticeScreen>
                         isActive: isActive,
                         playheadUnits: playheadUnits,
                         marks: _hitMarks[timelineIndex] ?? const [],
+                        eventColors: noteColors[timelineIndex] ?? const {},
                         staffHeight: staffHeight,
                       ),
                     );
@@ -688,6 +793,25 @@ class _PracticeScreenState extends State<PracticeScreen>
       ),
     );
   }
+
+  /// Each judged note's colour, for the "colour notes by judgement"
+  /// setting. Worked out again only when a new judgement arrives, not on
+  /// every frame of the moving playhead -- the same map, unchanged, also
+  /// spares the staffs a redraw.
+  Map<int, Map<int, Color>> _noteColors() {
+    if (_noteColorsJudgementCount != _runJudgements.length) {
+      _noteColorsJudgementCount = _runJudgements.length;
+      _noteColorsCache = judgementEventColors(
+        _runJudgements,
+        layout: _layout,
+        secondsPerUnit: _msPerUnit / 1000,
+      );
+    }
+    return _noteColorsCache;
+  }
+
+  Map<int, Map<int, Color>> _noteColorsCache = const {};
+  int _noteColorsJudgementCount = 0;
 
   static const double _gapAboveSlots = 4;
   static const double _gapBetweenSlots = 6;
@@ -750,10 +874,17 @@ class _PracticeScreenState extends State<PracticeScreen>
               ElevatedButton.icon(
                 key: const Key('practice_review_button'),
                 onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => ReviewScreen(review: review)),
+                  MaterialPageRoute(builder: (_) => ReviewScreen(review: review, note: _runNote)),
                 ),
                 icon: const Icon(Icons.insights),
                 label: const Text('Review'),
+              ),
+            if (review != null && widget.scoreId != null)
+              OutlinedButton.icon(
+                key: const Key('practice_note_button'),
+                onPressed: _editRunNote,
+                icon: const Icon(Icons.edit_note),
+                label: Text(_runNote.isEmpty ? 'Add note' : 'Edit note'),
               ),
           ],
         );
@@ -898,6 +1029,7 @@ class _PracticeSlotView extends StatelessWidget {
   final bool isActive;
   final double? playheadUnits;
   final List<StaffMark> marks;
+  final Map<int, Color> eventColors;
   final double staffHeight;
 
   /// Height of everything but the staff: the label line, the padding, and
@@ -913,6 +1045,7 @@ class _PracticeSlotView extends StatelessWidget {
     required this.isActive,
     required this.playheadUnits,
     required this.marks,
+    required this.eventColors,
     required this.staffHeight,
   });
 
@@ -948,6 +1081,7 @@ class _PracticeSlotView extends StatelessWidget {
                       showTimeSignature: showTimeSignature,
                       playheadUnits: playheadUnits,
                       marks: marks,
+                      eventColors: eventColors,
                       height: staffHeight,
                     ),
             ),

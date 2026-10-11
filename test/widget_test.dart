@@ -17,14 +17,14 @@ void main() {
   testWidgets('Appending quarter notes fills the measure and disables overflow', (tester) async {
     await pumpEditor(tester);
 
-    expect(find.text('0/48 units filled'), findsOneWidget);
+    expect(find.text('0 of 4 beats filled'), findsOneWidget);
 
     for (var i = 0; i < 4; i++) {
       await tester.tap(find.byKey(const Key('duration_quarter')));
       await tester.pump();
     }
 
-    expect(find.text('48/48 units filled'), findsOneWidget);
+    expect(find.text('4 of 4 beats filled'), findsOneWidget);
 
     final quarterButton =
         tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
@@ -49,11 +49,11 @@ void main() {
       await tester.tap(find.byKey(const Key('duration_eighth_triplet')));
       await tester.pump();
     }
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('backspace')));
     await tester.pump();
-    expect(find.text('8/48 units filled'), findsOneWidget);
+    expect(find.text('⅔ of 4 beats filled'), findsOneWidget);
 
     // 3 quarters + 2 triplets leaves 4 units: room for one more triplet, but
     // not for an eighth (6).
@@ -61,14 +61,14 @@ void main() {
       await tester.tap(find.byKey(const Key('duration_quarter')));
       await tester.pump();
     }
-    expect(find.text('44/48 units filled'), findsOneWidget);
+    expect(find.text('3⅔ of 4 beats filled'), findsOneWidget);
     expect(
       tester.widget<ElevatedButton>(find.byKey(const Key('duration_eighth'))).onPressed,
       isNull,
     );
     await tester.tap(find.byKey(const Key('duration_eighth_triplet')));
     await tester.pump();
-    expect(find.text('48/48 units filled'), findsOneWidget);
+    expect(find.text('4 of 4 beats filled'), findsOneWidget);
   });
 
   testWidgets('On a narrow screen the note buttons scroll sideways instead of overflowing',
@@ -101,7 +101,7 @@ void main() {
     expect(tester.getRect(backspace).right, lessThanOrEqualTo(screenWidth));
     await tester.tap(backspace);
     await tester.pump();
-    expect(find.text('0/48 units filled'), findsOneWidget);
+    expect(find.text('0 of 4 beats filled'), findsOneWidget);
   });
 
   testWidgets('Backspace removes the last appended event', (tester) async {
@@ -109,11 +109,11 @@ void main() {
 
     await tester.tap(find.byKey(const Key('duration_eighth')));
     await tester.pump();
-    expect(find.text('6/48 units filled'), findsOneWidget);
+    expect(find.text('½ of 4 beats filled'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('backspace')));
     await tester.pump();
-    expect(find.text('0/48 units filled'), findsOneWidget);
+    expect(find.text('0 of 4 beats filled'), findsOneWidget);
 
     final backspaceButton = tester.widget<IconButton>(find.byKey(const Key('backspace')));
     expect(backspaceButton.onPressed, isNull);
@@ -124,15 +124,15 @@ void main() {
 
     await tester.tap(find.byKey(const Key('duration_quarter')));
     await tester.pump();
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('measure_tab_1')));
     await tester.pump();
-    expect(find.text('0/48 units filled'), findsOneWidget);
+    expect(find.text('0 of 4 beats filled'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('measure_tab_0')));
     await tester.pump();
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
   });
 
   testWidgets('Selecting a type applies it to subsequently appended notes', (tester) async {
@@ -144,7 +144,7 @@ void main() {
     await tester.pump();
 
     // A rest quarter still fills 12 units even though it's silent.
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
   });
 
   testWidgets('Changing the meter updates the button label and measure capacity', (tester) async {
@@ -154,7 +154,7 @@ void main() {
 
     await tester.tap(find.byKey(const Key('duration_quarter')));
     await tester.pump();
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('meter_button')));
     await tester.pumpAndSettle();
@@ -163,7 +163,7 @@ void main() {
 
     expect(find.text('Meter: 7/4'), findsOneWidget);
     // The quarter note already entered still fits, so it stays.
-    expect(find.text('12/84 units filled'), findsOneWidget);
+    expect(find.text('1 of 7 beats filled'), findsOneWidget);
 
     // Regression: the duration buttons must stay enabled past 4 quarter
     // notes under a meter wider than 4/4, not disable at the old 4/4 cap.
@@ -171,7 +171,7 @@ void main() {
       await tester.tap(find.byKey(const Key('duration_quarter')));
       await tester.pump();
     }
-    expect(find.text('60/84 units filled'), findsOneWidget);
+    expect(find.text('5 of 7 beats filled'), findsOneWidget);
     final quarterButton =
         tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
     expect(quarterButton.onPressed, isNotNull);
@@ -198,7 +198,7 @@ void main() {
 
     expect(find.text('Meter: 3/2'), findsOneWidget);
     // 3 beats * 24 units per half-note beat = 72.
-    expect(find.text('0/72 units filled'), findsOneWidget);
+    expect(find.text('0 of 3 beats filled'), findsOneWidget);
 
     // The 1/2 family's max (8/2) is reachable, independent of the 1/4
     // family's max (16/4) shown in the same popup.
@@ -274,16 +274,16 @@ void main() {
       expect(find.textContaining('Measures 2, 4 already have notes'), findsOneWidget);
 
       for (final (index, meter, filled) in [
-        (0, '3/4', '0/36'),
-        (1, '4/4', '48/48'), // filled: untouched
-        (2, '3/4', '0/36'),
-        (3, '4/4', '24/48'), // has notes: untouched, though not full
-        (4, '3/4', '0/36'),
-        (7, '3/4', '0/36'),
+        (0, '3/4', '0 of 3 beats'),
+        (1, '4/4', '4 of 4 beats'), // filled: untouched
+        (2, '3/4', '0 of 3 beats'),
+        (3, '4/4', '2 of 4 beats'), // has notes: untouched, though not full
+        (4, '3/4', '0 of 3 beats'),
+        (7, '3/4', '0 of 3 beats'),
       ]) {
         await goToMeasure(tester, index);
         expect(find.text('Meter: $meter'), findsOneWidget, reason: 'measure ${index + 1}');
-        expect(find.text('$filled units filled'), findsOneWidget, reason: 'measure ${index + 1}');
+        expect(find.text('$filled filled'), findsOneWidget, reason: 'measure ${index + 1}');
       }
     });
 
@@ -294,7 +294,7 @@ void main() {
 
       await selectMeter(tester, 'meter_option_2_4');
 
-      expect(find.text('24/24 units filled'), findsOneWidget);
+      expect(find.text('2 of 2 beats filled'), findsOneWidget);
       expect(find.textContaining('Removed the last 2 entries of measure 1'), findsOneWidget);
     });
 
@@ -310,7 +310,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Meter: 5/4'), findsOneWidget);
-      expect(find.text('0/60 units filled'), findsOneWidget);
+      expect(find.text('0 of 5 beats filled'), findsOneWidget);
     });
   });
 
@@ -336,18 +336,18 @@ void main() {
 
     await tester.tap(find.byKey(const Key('duration_quarter')));
     await tester.pump();
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('measure_tab_add')));
     await tester.pump();
 
     // Jumped straight to the new (empty) 9th measure.
     expect(find.byKey(const Key('measure_tab_8')), findsOneWidget);
-    expect(find.text('0/48 units filled'), findsOneWidget);
+    expect(find.text('0 of 4 beats filled'), findsOneWidget);
 
     // The earlier measure's content is untouched.
     await tester.tap(find.byKey(const Key('measure_tab_0')));
     await tester.pump();
-    expect(find.text('12/48 units filled'), findsOneWidget);
+    expect(find.text('1 of 4 beats filled'), findsOneWidget);
   });
 }

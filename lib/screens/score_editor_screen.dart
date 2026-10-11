@@ -5,16 +5,28 @@ import 'package:flutter/material.dart';
 import '../models/rhythm_score.dart';
 import '../services/rhythm_player.dart';
 import '../services/score_storage.dart';
+import '../services/track_sections.dart';
+import '../widgets/beat_count.dart';
 import '../widgets/staff_notation_view.dart';
 
 class ScoreEditorScreen extends StatefulWidget {
   final String fileName;
   final RhythmScore initialScore;
 
+  /// The track's sections, kept on the same music when measures are deleted
+  /// (see [TrackSections.measureDeleted]). Null for a track with none to
+  /// keep track of (e.g. a new one).
+  final TrackSections? sections;
+
+  /// Where the track is saved; replaceable so tests can use an in-memory one.
+  final ScoreStorage? storage;
+
   const ScoreEditorScreen({
     super.key,
     required this.fileName,
     required this.initialScore,
+    this.sections,
+    this.storage,
   });
 
   @override
@@ -22,7 +34,7 @@ class ScoreEditorScreen extends StatefulWidget {
 }
 
 class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
-  final _storage = ScoreStorage();
+  late final ScoreStorage _storage = widget.storage ?? ScoreStorage();
   final _player = RhythmPlayer();
 
   late RhythmScore _score;
@@ -31,6 +43,18 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
 
   int _activeMeasure = 0;
   EventType _selectedType = EventType.normal;
+
+  /// Measures deleted since the last save, in the order they were deleted
+  /// (each index as it was at the time). Sections are moved to follow them
+  /// only when the track is saved -- leaving without saving keeps both the
+  /// track and its sections as they were.
+  final _deletedMeasures = <int>[];
+
+  /// The note or rest of the current measure picked by tapping it on the
+  /// staff, if any. While one is picked, the length and type buttons change
+  /// it and backspace removes it; otherwise they work at the end of the
+  /// measure, as before.
+  int? _selectedEvent;
 
   /// Continuous position across the whole score, in [RhythmGrid] units.
   double? _playheadUnits;
@@ -63,19 +87,109 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
 
   int _readTempo() => int.tryParse(_tempoController.text) ?? _score.tempoBpm;
 
-  void _appendEvent(NoteValue value) {
+  /// A length button: changes the picked note's length, or adds a new
+  /// note at the end when none is picked.
+  void _enterValue(NoteValue value) {
     setState(() {
       final measure = _score.measures[_activeMeasure];
-      if (!measure.canAppend(value)) return;
-      final updated = measure.appendEvent(RhythmEvent(value, _selectedType));
+      final selected = _selectedEvent;
+      final Measure updated;
+      if (selected != null) {
+        if (!measure.canReplace(selected, value)) return;
+        updated = measure.replaceAt(selected, RhythmEvent(value, _selectedType));
+      } else {
+        if (!measure.canAppend(value)) return;
+        updated = measure.appendEvent(RhythmEvent(value, _selectedType));
+      }
       _score = _score.copyWithMeasure(_activeMeasure, updated);
     });
   }
 
+  /// A type button: sets the type for what's entered next, and changes the
+  /// picked note's type if one is picked.
+  void _selectType(EventType type) {
+    setState(() {
+      _selectedType = type;
+      final selected = _selectedEvent;
+      if (selected == null) return;
+      final measure = _score.measures[_activeMeasure];
+      final event = measure.events[selected];
+      _score = _score.copyWithMeasure(
+        _activeMeasure,
+        measure.replaceAt(selected, RhythmEvent(event.value, type)),
+      );
+    });
+  }
+
+  /// Removes the picked note (the notes after it move up), or the last one
+  /// when none is picked.
   void _backspace() {
     setState(() {
       final measure = _score.measures[_activeMeasure];
-      _score = _score.copyWithMeasure(_activeMeasure, measure.removeLast());
+      final selected = _selectedEvent;
+      _score = _score.copyWithMeasure(
+        _activeMeasure,
+        selected != null ? measure.removeAt(selected) : measure.removeLast(),
+      );
+      _selectedEvent = null;
+    });
+  }
+
+  /// Picks the tapped note (showing its type on the type buttons), or drops
+  /// the pick when the same note or empty space is tapped.
+  void _tapEvent(int? index) {
+    setState(() {
+      if (index == null || index == _selectedEvent) {
+        _selectedEvent = null;
+        return;
+      }
+      _selectedEvent = index;
+      _selectedType = _score.measures[_activeMeasure].events[index].type;
+    });
+  }
+
+  void _goToMeasure(int index) {
+    setState(() {
+      _activeMeasure = index;
+      _selectedEvent = null;
+    });
+  }
+
+  /// Deletes the current measure, asking first if it has notes in it. The
+  /// measures after it move up.
+  Future<void> _deleteMeasure() async {
+    final measureIndex = _activeMeasure;
+    if (_score.measures.length <= 1) return;
+    if (_score.measures[measureIndex].hasNotes) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Delete measure ${measureIndex + 1}?'),
+          content: const Text('Its notes will be deleted too.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              key: const Key('delete_measure_confirm'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text(
+                'Delete',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+    if (_player.isPlaying) await _player.stop();
+    setState(() {
+      _score = _score.removeMeasure(measureIndex);
+      _deletedMeasures.add(measureIndex);
+      _activeMeasure = measureIndex.clamp(0, _score.measures.length - 1);
+      _selectedEvent = null;
     });
   }
 
@@ -89,7 +203,10 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
     if (meter == before.measures[measureIndex].meter) return;
     if (_player.isPlaying) await _player.stop();
     final after = before.withMeterFrom(measureIndex, meter);
-    setState(() => _score = after);
+    setState(() {
+      _score = after;
+      _selectedEvent = null;
+    });
 
     final notices = <String>[];
     final dropped = before.measures[measureIndex].events.length -
@@ -118,6 +235,7 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
     setState(() {
       _score = _score.appendMeasure();
       _activeMeasure = _score.measures.length - 1;
+      _selectedEvent = null;
     });
   }
 
@@ -136,7 +254,9 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
       return;
     }
     _score = _score.copyWith(tempoBpm: _readTempo());
-    setState(() {});
+    // Playback moves between measures, so a picked note would end up
+    // pointing into the wrong one.
+    setState(() => _selectedEvent = null);
     try {
       await _player.play(_score);
     } catch (e) {
@@ -158,6 +278,17 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
       tempoBpm: _readTempo(),
     );
     await _storage.save(widget.fileName, _score);
+    final sections = widget.sections;
+    if (sections != null && _deletedMeasures.isNotEmpty) {
+      try {
+        for (final deleted in _deletedMeasures) {
+          await sections.measureDeleted(widget.fileName, deleted);
+        }
+      } catch (e) {
+        debugPrint('Could not move the sections to follow deleted measures: $e');
+      }
+      _deletedMeasures.clear();
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
   }
@@ -172,6 +303,10 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
             _playheadUnits! < measureStarts[_activeMeasure + 1]
         ? _playheadUnits! - measureStartUnits
         : null;
+    final selected = _selectedEvent;
+    bool canEnter(NoteValue value) =>
+        selected != null ? measure.canReplace(selected, value) : measure.canAppend(value);
+
     // Printed where the time signature starts or changes, as in sheet music.
     final showTimeSignature =
         _activeMeasure == 0 || _score.measures[_activeMeasure - 1].meter != measure.meter;
@@ -218,22 +353,35 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
               _MeasureTabStrip(
                 measureCount: _score.measures.length,
                 activeMeasure: _activeMeasure,
-                onSelect: (index) => setState(() => _activeMeasure = index),
+                onSelect: _goToMeasure,
                 onAddMeasure: _addMeasure,
+                onDeleteMeasure: _score.measures.length > 1 ? _deleteMeasure : null,
               ),
               const SizedBox(height: 12),
               StaffNotationView(
+                key: const Key('editor_staff'),
                 measure: measure,
                 showTimeSignature: showTimeSignature,
                 playheadUnits: playheadInMeasure,
-                showCursor: !_player.isPlaying,
+                showCursor: !_player.isPlaying && selected == null,
+                selectedEventIndex: selected,
+                onTapEvent: _player.isPlaying ? null : _tapEvent,
               ),
               const SizedBox(height: 4),
-              Text('${measure.filledUnits}/${measure.capacityUnits} units filled'),
+              Text(filledBeatsText(measure), key: const Key('measure_fill_text')),
+              Text(
+                selected == null
+                    ? 'Tap a note or rest on the staff to change it.'
+                    : 'Note ${selected + 1} picked: tap a length or type to change it, '
+                        'or ⌫ to remove it. Tap it again to let go.',
+                key: const Key('selection_hint'),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               const SizedBox(height: 12),
               _TypeSelector(
                 selected: _selectedType,
-                onSelect: (type) => setState(() => _selectedType = type),
+                onSelect: _selectType,
               ),
               const SizedBox(height: 12),
               _NoteEntryStrip(
@@ -241,36 +389,36 @@ class _ScoreEditorScreenState extends State<ScoreEditorScreen> {
                   _DurationButton(
                     keyName: 'duration_quarter',
                     label: '1/4',
-                    enabled: measure.canAppend(NoteValue.quarter),
-                    onTap: () => _appendEvent(NoteValue.quarter),
+                    enabled: canEnter(NoteValue.quarter),
+                    onTap: () => _enterValue(NoteValue.quarter),
                   ),
                   const SizedBox(width: 8),
                   _DurationButton(
                     keyName: 'duration_eighth',
                     label: '1/8',
-                    enabled: measure.canAppend(NoteValue.eighth),
-                    onTap: () => _appendEvent(NoteValue.eighth),
+                    enabled: canEnter(NoteValue.eighth),
+                    onTap: () => _enterValue(NoteValue.eighth),
                   ),
                   const SizedBox(width: 8),
                   _DurationButton(
                     keyName: 'duration_sixteenth',
                     label: '1/16',
-                    enabled: measure.canAppend(NoteValue.sixteenth),
-                    onTap: () => _appendEvent(NoteValue.sixteenth),
+                    enabled: canEnter(NoteValue.sixteenth),
+                    onTap: () => _enterValue(NoteValue.sixteenth),
                   ),
                   const SizedBox(width: 8),
                   _DurationButton(
                     keyName: 'duration_eighth_triplet',
                     label: 'Triplet',
-                    enabled: measure.canAppend(NoteValue.eighthTriplet),
-                    onTap: () => _appendEvent(NoteValue.eighthTriplet),
+                    enabled: canEnter(NoteValue.eighthTriplet),
+                    onTap: () => _enterValue(NoteValue.eighthTriplet),
                   ),
                   const SizedBox(width: 8),
                   IconButton(
                     key: const Key('backspace'),
                     onPressed: measure.events.isEmpty ? null : _backspace,
                     icon: const Icon(Icons.backspace_outlined),
-                    tooltip: 'Remove last',
+                    tooltip: selected == null ? 'Remove last' : 'Remove picked note',
                   ),
                 ],
               ),
@@ -398,11 +546,16 @@ class _MeasureTabStrip extends StatefulWidget {
   final ValueChanged<int> onSelect;
   final VoidCallback onAddMeasure;
 
+  /// Deletes the current measure; null (button disabled) when there's only
+  /// one left.
+  final VoidCallback? onDeleteMeasure;
+
   const _MeasureTabStrip({
     required this.measureCount,
     required this.activeMeasure,
     required this.onSelect,
     required this.onAddMeasure,
+    required this.onDeleteMeasure,
   });
 
   @override
@@ -460,6 +613,17 @@ class _MeasureTabStripState extends State<_MeasureTabStrip> {
               icon: Icons.add,
               selected: false,
               onTap: widget.onAddMeasure,
+              tooltip: 'Add a measure',
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 3),
+            child: _MeasureTabButton(
+              key: const Key('measure_tab_delete'),
+              icon: Icons.remove,
+              selected: false,
+              onTap: widget.onDeleteMeasure,
+              tooltip: 'Delete this measure',
             ),
           ),
         ],
@@ -474,7 +638,10 @@ class _MeasureTabButton extends StatelessWidget {
   final String? label;
   final IconData? icon;
   final bool selected;
-  final VoidCallback onTap;
+
+  /// Null shows the button disabled.
+  final VoidCallback? onTap;
+  final String? tooltip;
 
   const _MeasureTabButton({
     super.key,
@@ -482,11 +649,12 @@ class _MeasureTabButton extends StatelessWidget {
     this.icon,
     required this.selected,
     required this.onTap,
+    this.tooltip,
   }) : assert(label != null || icon != null);
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    final button = SizedBox(
       width: size,
       height: size,
       child: OutlinedButton(
@@ -500,6 +668,7 @@ class _MeasureTabButton extends StatelessWidget {
         child: icon != null ? Icon(icon, size: 20) : Text(label!),
       ),
     );
+    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
   }
 }
 

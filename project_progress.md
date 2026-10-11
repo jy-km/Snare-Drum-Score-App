@@ -2,7 +2,7 @@
 
 Tracks implementation status against the plan in `project_overview.md`. Updated as work progresses — check the "Last updated" line for freshness.
 
-**Last updated**: 2026-10-04 (Milestone 4.6: run review and replay built -- awaiting the user's verdict on whether Milestone 4 is complete)
+**Last updated**: 2026-10-10 (Milestone 5 done; Milestone 6 is now the editor overhaul and the UI overhaul moves to Milestone 7)
 
 ## Status at a glance
 
@@ -13,7 +13,10 @@ Tracks implementation status against the plan in `project_overview.md`. Updated 
 | 2. Practice screen (count-in, tempo cue, moving playhead) | **Done** — confirmed on Pixel 10 |
 | 3. Adjustable meters + selectable hit sounds | **Done** (one item deferred, see below) |
 | 3.5. Half-note-beat meters (1/2-8/2) + eighth-note triplets | **Done**. Not yet verified on a real device. |
-| 4. Mic capture + onset detection + scoring + replay | **In progress** — 4.1-4.3 (hit detection, judging, mic in practice) confirmed on the user's phone; 4.4 (alignment: visible hit marks, sound-delay readout, fallback) built, awaiting test on a real phone |
+| 4. Mic capture + onset detection + scoring + replay | **Done** — declared complete by the user (2026-10-04); partial items carried over, see Milestone 4 |
+| 5. More time signatures, QOL + bug fixes, daily practice | **Done** — declared complete by the user (2026-10-10); not yet tried on a device |
+| 6. Editor overhaul | Not started |
+| 7. UI overhaul | **In progress** — first item (colour notes by judgement, with a Settings screen) built, not yet tried on a device |
 
 ## Key decisions (see `project_overview.md` for full context)
 
@@ -174,7 +177,7 @@ Scope: the user asked for eighth-note triplets, entered the same way as 1/4, 1/8
 
 ## Milestone 4 — Mic capture + onset detection + scoring + replay
 
-Status: **In progress** -- 4.1, 4.2 and 4.3 confirmed by the user on a real phone ("looks accurate"). 4.4's additions (hit marks, sound-delay readout, estimate fallback) are built but not yet tried on a device.
+Status: **Done** -- declared complete by the user on 2026-10-04, after the review/replay (4.6) was built. 4.1-4.3 were confirmed accurate on their phone. Items still marked partial below were accepted as-is and are not blocking: no single overall score (4.5), headphone judging with the rhythm sound on (4.7), and no headphone-specific confirmation of the 4.4 additions.
 
 Scope: capture mic audio, hand-rolled onset detector, compare detected vs. expected onset times, compute a score, replay overlay showing timing deviation.
 
@@ -185,7 +188,7 @@ Broken into steps, ordered so the one that could invalidate the whole plan (can 
 - [x] **4.3 Mic capture inside the practice screen** -- built as part of 4.2 (see below); the user reported it looks accurate on their phone
 - [~] **4.4 Aligning the recording with the timeline** -- count-in anchoring (built with 4.2) is what the user's accurate judgements already rest on; now also visible on screen, with an estimate fallback, and with a calibration mode that covers headphones (see the two 4.4 sections below). None of the 4.4 additions has been tried on a device
 - [~] **4.5 Score display** -- a per-judgement tally is shown when a run ends; no single overall score/percentage yet
-- [~] **4.6 Replay overlay** -- built: a Review screen after each judged run, with every measure marked, the notes most off, and a replay of the recording with a moving playhead (see 4.6 below). Awaiting the user's verdict
+- [x] **4.6 Replay overlay** -- a Review screen after each judged run, with every measure marked, the notes most off, and a replay of the recording with a moving playhead (see 4.6 below)
 - [~] **4.7 Speaker bleed** -- simplest version done: a run with "Play rhythm sound" on is not judged and doesn't open the mic. Judging with the rhythm audible (headphones) is not addressed
 - [x] **4.8 Everything visible while playing** (added at the user's request) -- see below
 
@@ -283,7 +286,7 @@ Status: **Done**; not yet seen on a real device.
 
 - [x] **Name**: the user-visible name is now "MyTempo" -- the main screen's title (was "Rhythm Scores"), the app title in `lib/main.dart` (was "Snare Drum Score"), the Android launcher label in `AndroidManifest.xml` (was `snare_drum_score_app`), and iOS `CFBundleDisplayName`/`CFBundleName` in `Info.plist`. **Deliberately not renamed**: the Dart package (`snare_drum_score_app`, in every import), the Android `applicationId`/namespace (`com.example.snare_drum_score_app`) and the repo folder -- changing the application ID makes the phone treat it as a different app (existing saved scores and the mic permission would not carry over), and none of them is visible to a user. The desktop/web platform folders were not touched (Android/iOS only, per the key decisions).
 - [x] **IDs out of the titles**: a score is saved as `<title>_<creation time in ms>`, and the main screen used to show that whole file name ("My_Song_1790812345678"). Each card now shows the score's real title -- the one saved inside its MIDI file, so it also follows a rename made in the editor and keeps spaces/punctuation the file name can't -- falling back to the file name's title part if the file can't be read. `ScoreStorage.listScores()` / `ScoreFileInfo` (new, in `score_storage.dart`).
-- [x] **"More Info..." button** on each score's card (`Key('more_info_<file name>')`): a dialog with the score's ID, its creation date and time (read from the ID), and its file name. Per score rather than one button for the whole screen -- my reading of "a More Info button on the main menu"; the ID belongs to a score.
+- [x] **"More Info..."** for each score: a dialog with the score's ID, its creation date and time (read from the ID), and its file name. Per score rather than one button for the whole screen -- my reading of "a More Info button on the main menu"; the ID belongs to a score. (Now an item in the track's ⋮ menu, `Key('score_menu_more_info')` -- see Milestone 5.8.)
 - [x] Tests: `score_storage_test.dart` -- splitting a file name into title and ID, preferring the saved title, a title ending in its own number, a file not named by the app, a title of only replaced characters. All 97 tests passing, `flutter analyze` clean. The list screen itself has no widget test (it reads the real documents directory).
 
 ### One judgement per note
@@ -311,7 +314,7 @@ The user asked for a fifth judgement, "Fail", for playing in a rest: without the
 
 ### 4.6 Review and replay
 
-Status: **Built; awaiting the user's verdict** (they will say whether it completes Milestone 4). Not yet tried on a real device.
+Status: **Done** (the user declared Milestone 4 complete after this was built).
 
 The project overview's step 6: "The app can replay the player's performance overlaid on the score, showing which notes were most off". Before this, hit marks only existed live, on the three measures on screen, and were gone on Stop / Practice Again.
 
@@ -357,12 +360,135 @@ The user asked for different time signatures in different measures: choosing a m
 - [x] **Bug found and fixed while reworking saving -- likely affected real saved scores**: when two notes are back to back, one's note-off and the next one's note-on fall on the same tick, and they have to be written off-first for loading to pair them correctly. Writing relied on `List.sort`, which isn't stable beyond a few dozen events, so a dense enough score could be saved with a note-on first, and on reopening it would lose notes / get wrong lengths. Confirmed with a new test (8 measures of sixteenths) that fails without the fix. Fixed in two places: saving now breaks same-tick ties explicitly; and **loading now reads files already saved in the bad order correctly** (a new note-on ends the note still sounding; the late zero-length note-off is ignored), with a test built from such a file.
 - [x] Tests: `rhythm_score_test.dart` (`withMeterFrom`: from the chosen measure only, filled later measures untouched, rests-only treated as empty, what fits is kept; positions with mixed lengths); `widget_test.dart` (a meter applies from the chosen measure on; going back leaves measures with notes alone and says which; overflowing notes removed with a notice; a new measure takes the last meter; existing meter test updated since notes that fit are now kept); `midi_score_codec_test.dart` (mixed meters round-trip; the dense-score regression; an old wrongly-ordered file); `practice_screen_test.dart` (2/4, 3/4, 2/4 measures each last their own length, count-in follows measure 1). All 125 tests passing, `flutter analyze` clean.
 
+## Milestone 5 — More time signatures, QOL + bug fixes, daily practice
+
+Status: **Done** -- declared complete by the user (2026-10-10); none of it tried on a device yet. Scope set by the user: more time signatures and QOL/bug fixes (2026-10-04), and **daily practice as the milestone's major part** (2026-10-07). For the first two they chose the eighth-note family of meters and all four QOL fixes offered; how compound meters (6/8 etc.) should be felt they left for later.
+
+- [x] **5.1 More time signatures** -- the x/8 family (built; not yet tried on a device)
+- [x] **5.2 QOL and bug fixes** -- Stop really stops, beats counter, delete & rename, editing inside a measure (built; not yet tried on a device)
+- [x] **5.3 Practice history** -- every judged run saved with its recording, accuracy and the player's note; a History section to browse, chart and replay them (see 5.3 below; built, not yet tried on a device)
+- [x] **5.4 Sections** -- snippets of a track, practised on their own and linked to their mother track (see 5.4 below; built, not yet tried on a device)
+- [x] **5.7 Progress over time** -- accuracy by day (5.3) and the fastest tempo played each day, charted in each track's history (see 5.7 below; built, not yet tried on a device)
+- [x] **5.8 Scheduled practice reminders** -- from a track's ⋮ menu on the main menu: every day, weekly on chosen days, or once, at a chosen time (see 5.8 below; built, not yet tried on a device)
+- [x] **5.9 Greeting when the app opens** -- a dismissible pop-up, with the upcoming scheduled practice at the bottom (see 5.9 below; built, not yet tried on a device)
+
+### 5.1 Eighth-note meters (1/8-16/8)
+
+- [x] `RhythmGrid.beatUnits` is now `[4, 2, 8]`, x/8 allowing 1-16 beats; an eighth-note beat is 6 grid units, so everything built on `TimeSignature` (capacity, per-measure meters, staff time signature, MIDI save/load, practice timeline, judging, review) works unchanged. The meter menu lists the x/8 family after the x/2 one (keys `meter_option_<n>_8`).
+- [x] **How x/8 is counted, for now** -- the user deferred whether compound meters (6/8, 9/8, 12/8) should be felt in dotted-quarter beats. Until they decide, the app keeps its existing rule: **the count-in clicks the meter's bottom number** (eighth notes in x/8: six clicks for 6/8), and **BPM keeps meaning quarter notes everywhere**. The count-in staff shows one eighth note per click (`TimelineLayout.countInMeasure`).
+- [x] Tests: x/8 validity and lengths (`rhythm_score_test`), 7/8 and 6/8 round-trip through MIDI (`midi_score_codec_test`), a 6/8 count-in is six eighths taking 3s at 60 BPM (`practice_screen_test`), choosing 7/8 in the editor and filling it (`editor_editing_test`).
+
+### 5.2 QOL and bug fixes
+
+- [x] **Stop really stops** (the bug noted back in 4.2): Stop / Practice Again now stops the practice audio (`_clickPlayer.stop()`), so the count-in -- and with "Play rhythm sound" on, the whole rhythm -- no longer plays on after Stop. Also closed a race: audio still being prepared when Stop is pressed no longer starts playing afterwards (a run counter checked once rendering finishes). Test (`practice_audio_test.dart`) stands in for the audio plugin's channels and checks Stop reaches it; confirmed it fails without the fix. It lives in its own file because the audio plugin caches a failed setup from any earlier test in the same file.
+- [x] **Beats counter**: the editor's "24/48 units filled" is now "2 of 4 beats filled", counted in the measure's own beat (half notes in x/2, eighths in x/8), with part-beats as fractions ("2½", "1¼", "⅔"; mixes without a single character are written out, e.g. "1 7/12"). `lib/widgets/beat_count.dart`, `beat_count_test.dart`.
+- [x] **Delete & rename scores**: a menu on each score's card on the main screen (Rename, Delete). Rename changes the title saved inside the score (file name and ID unchanged); Delete asks for confirmation first. `ScoreListScreen` takes an optional storage so it can be tested with an in-memory one (`score_list_screen_test.dart`).
+- [x] **Delete measures**: a "-" button after "+" in the editor's measure strip deletes the current measure (later ones move up); it asks first if the measure has notes, and is disabled when only one measure is left. `RhythmScore.removeMeasure`.
+- [x] **Editing inside a measure**: tap a note or rest on the editor's staff to pick it (highlighted; the type buttons show its type). While picked: a length button changes its length (disabled if the result would overflow the measure; later notes move along), a type button changes its type, and backspace removes it (later notes move up). Tap it again, or empty space, to let go; changing measure, meter, adding/deleting a measure or pressing Play also lets go. Without a pick, everything works at the end of the measure as before. A hint line under the counter explains this. `Measure.replaceAt` / `removeAt` / `canReplace`; `StaffNotationView` gained `selectedEventIndex`, `onTapEvent` and a public `xForUnits` (the one position formula, now also used for taps). Highlight checked by eye from a rendered PNG.
+- [x] Tests for all of the above: `editor_editing_test.dart` (pick and let go, change length, overflow disabled, change type, type buttons follow the pick, remove picked, tap past the end, changing measure; delete empty measure, confirm for a measure with notes, last measure can't be deleted), `rhythm_score_test.dart` (replace/remove/canReplace, removeMeasure), plus the updated counter text throughout `widget_test.dart`. All 160 tests passing, `flutter analyze` clean.
+
+**Not done (not asked for in this round)**: inserting a new note in the middle of a measure (pick-and-change, remove and append cover most edits); undo.
+
+### 5.3 Practice history
+
+The user specified it in detail: a button next to the mic test and settings opening a history section; the same tracks as the main menu, same order and names, each with only a "View Practice History" button; inside, a graph of average accuracy by day (all runs included) and every past recording with tempo, accuracy, the player's note (added after each practice, in practice mode) and so on; and each recording can be listened to again with the same analysis as right after practising.
+
+- [x] **What's saved** (`lib/services/practice_history.dart`): every judged run, automatically when it ends (from a track opened from the main menu) -- date and time, tempo, tally, accuracy, length, whether timing was estimated, the player's note, the full judgement list, the microphone recording, and **a copy of the score as it was** (so a run still reviews correctly after the score is edited). Files: `history/<track>/<run>.json` and `<run>.pcm` (raw 16-bit mono, about 5 MB per minute) in the app's documents directory. Deleting a track from the main menu deletes its history too. Runs that aren't judged (rhythm sound on, mic denied, count-in not heard without a fallback) aren't saved -- there's no analysis to keep.
+- [x] **Accuracy** (the single score 4.5 lacked; the default proposed in the game plan, which the user didn't change): each note Perfect 100% / Great 75% / Good 50% / Miss 0%, averaged over the notes, with each Fail counted as one more missed note. Shown at the end of a practice run ("Accuracy 56%", before the count-in line), on the review, on each recording and in the chart.
+- [x] **Notes**: after a judged run, an "Add note" button beside Practice Again / Review (`Key('practice_note_button')`) opens a note dialog; the note is saved with the run (and shown on its review). Notes can also be edited -- or cleared -- from the history.
+- [x] **History button** on the main menu, between Calibration and Settings (`Key('history_button')`, history icon) -> `HistoryScreen` (`lib/screens/history_screen.dart`): the tracks in the main menu's order, under their titles, each with a single "View Practice History" button.
+- [x] **A track's history** (`TrackHistoryScreen`): an **"Average accuracy by day" chart** (`lib/widgets/accuracy_chart.dart`) -- one point per day practised, each the average of all that day's runs, on a fixed 0-100% scale; the latest day labelled; tap a point for its date, average and number of runs. Followed by **every recording, newest first**: date and time, accuracy, tempo, length, the tally, the note, and buttons to **Review & listen** (opens the same review screen as after practising -- the "most off" list, every measure marked, the replay with moving playhead -- headed with the run's date and tempo, its accuracy and note), edit the note, or delete the run (asks first).
+- [x] Chart built following the dataviz guidance for a single series: one line in the theme's primary colour, 2px, markers ringed in the surface colour, recessive grid at 0/50/100%, no legend (the title names it), one direct label, a tap tooltip, and the recordings list beneath doubling as the table view. Checked by eye from a rendered screenshot.
+- [x] **Bug caught by the tests before it shipped**: the history screen's reload ran a `setState` whose closure returned a Future, which Flutter rejects at runtime -- so editing a note or deleting a run would have thrown and not refreshed. Fixed.
+- [x] Tests: `practice_history_test.dart` (the accuracy formula; the file store against a real temp directory -- a run saved and reloaded exactly, newest-first per track, notes, deleting a run and a whole track; daily averages); `history_screen_test.dart` (tracks in main-menu order with one button each; the chart's days and averages; recordings newest first with tempo/accuracy/note; opening one shows its review with heading, accuracy, note and replay; editing a note; deleting a run; empty state); `practice_screen_test.dart` (a judged run is saved with its tempo, accuracy and full analysis, and its note is saved from practice; accuracy shown at the end; no note button when there's no track to save to); `score_list_screen_test.dart` now uses an in-memory history. All 185 tests passing, `flutter analyze` clean.
+
+**Known limits:** recordings are kept until deleted -- about 5 MB per minute of judged practice, with no automatic clean-up yet. The chart spaces practice days evenly (a gap of several days looks like one). Tempo over time is charted too, see 5.7.
+
+### Daily practice -- game plan (5.3-5.9)
+
+Goal, from the project overview: practice is a loop -- play a part, see how it went, raise the tempo, repeat -- and the app should carry that loop from one day to the next instead of starting cold each time. Daily practice is built so that every step reads one shared **practice history**, so it comes first; each later step is useful on its own as soon as it lands.
+
+1. **5.3 Practice history (foundation)** -- done, see above. Save a record of every judged run: date and time, which score (by its file ID) and which measures, practice tempo, the tally, how long it took, and an **accuracy score** for the run -- the single overall number Milestone 4.5 never had. Proposed accuracy: each note scores Perfect 100%, Great 75%, Good 50%, Miss 0%, averaged over the notes; each Fail then subtracts what one Miss would, floored at 0%. Kept in a local file like the other stores; shown on the end-of-run tally and the review.
+2. **5.4 Sections** -- done, see below (built as saved, named sections linked to their track, as the user specified).
+3. **5.7 Progress over time** -- done, see below. The tempo comes from whatever tempo each run was played at; the user chose this over a dedicated tempo ladder, and dropped the daily goal and streak (once 5.5 and 5.6) from the plan (2026-10-10).
+4. **5.8 Scheduled practice reminders** -- done, see below.
+5. **5.9 Greeting when the app opens** -- done, see below.
+
+### 5.4 Sections
+
+Asked 2026-10-10: "Make a function that you can take snippets of existing tracks ... and make them section practice, but instead you still link the sections into existing 'mother' tracks." (The same request renamed the app to MyTrak.)
+
+- [x] **A section** (`TrackSection`, `lib/services/track_sections.dart`) is a named range of a track's measures -- e.g. "Fill", measures 5-8. It **holds no notes of its own**: it points at its mother track's measures, so practising it always uses the track as it is now (its notes, time signatures, tempo and instrument); editing the track changes the section too.
+- [x] **Making one**: **New section...** in the track's ⋮ menu on the main menu (after the schedule items, before Rename): a name and From / To measure pickers (picking a start past the end drags the end along, and vice versa). Defaults: "Section N", measures 1-4.
+- [x] **On the main menu**, each track's card lists its sections in track order under the Edit / Practice buttons -- name, range ("m. 5–8"), a **Practice** button, and a ⋮ menu with **Edit section** (same form) and **Delete section** (asks first; the track and its history are kept).
+- [x] **Practising a section**: just its measures, with the count-in in the section's first time signature, and **measures numbered as in the track** ("Measure 5", "Measure 6" -- `TimelineLayout.firstMeasureNumber`), titled "Practice: Groove · Fill". Its runs are saved to the **mother track's** history, marked with the section as it was then -- recordings show "Section: Fill (m. 5–8)", and their review keeps the track's measure numbers ("Measure 5, note 3"). The accuracy-by-day chart still averages every run of the track, whole-track and section alike.
+- [x] **Staying linked when the track changes**: deleting measures in the editor moves the track's sections along when the track is **saved** -- later measures shift up, a range containing a deleted measure gets one shorter, a section whose only measure is deleted goes. Leaving without saving leaves both as they were. A section that runs past the end of its track anyway says so when practised instead of starting. Deleting a track deletes its sections.
+- [x] Stored in `sections.json` in the app's documents directory (`FileSectionStore`). The editor's storage is now replaceable too (`ScoreEditorScreen.storage`), and the main menu passes its own.
+- [x] **App renamed MyTrak** (from MyTempo): main screen title, app title, Android launcher label, iOS display name and bundle name, and the notifications-off message.
+- [x] Tests (`sections_test.dart`): range labels; taking measures from the mother track with its tempo and instrument; an edit to the track showing up in the section; past-the-end sections unusable; following deleted measures (before / inside / after / only measure); storage per track and in order, edits, deletes, the file store; measure numbering offset; and on the main menu -- MyTrak title, New section... saving a named range shown under its track, practising a section (just its measures, linked to the mother track, numbered from 2), editing and deleting a section, a past-the-end section refusing to start, deleting a track deleting its sections; in the editor -- saving after a measure deletion moves sections, not saving leaves them; section runs in the mother track's history labelled, with track measure numbers in their review. All 229 tests passing, `flutter analyze` clean. Main menu with sections checked by eye from a rendered screenshot.
+
+**Known limits**: inserting measures in the middle of a track isn't possible yet (only adding at the end), so sections can't be thrown off that way; the history chart doesn't yet separate section runs from whole-track runs.
+
+### 5.7 Progress over time
+
+Asked 2026-10-10: "Remove 5.5 and 5.6. Build 5.7, where it records whatever tempo the user plays at instead of having a dedicated tempo ladder."
+
+- [x] **Nothing new to record**: every saved run already keeps the tempo it was played at (5.3), so the tempo chart reads the existing history -- runs from before this change are included.
+- [x] **"Fastest tempo by day" chart** in each track's history, under "Average accuracy by day": one point per day practised -- the **fastest** tempo played that day (the climb toward the target is what it shows; a slower warm-up run doesn't pull the day down). Every run counts, whole-track and section alike, judged or not. The **track's own tempo** is drawn as a dashed line labelled "Target 100", and the card's subtitle names it. The scale is in whole tens around the tempos played and the target. The latest day is labelled ("88 BPM"); tapping a point shows e.g. "Oct 7: top 95 BPM (3 runs, 80–95)".
+- [x] **One chart implementation** for both: `lib/widgets/accuracy_chart.dart` now has a shared daily line chart (same dataviz styling as 5.3: 2px primary line, ringed markers, recessive grid, one direct label, tap tooltip) with an optional dashed reference line; `DailyTempo.fromRuns` groups runs by local day. The history screen's run count now counts every day practised.
+- [x] Tests: `practice_history_test.dart` (each day's fastest and slowest tempo and run count, runs without judgements included); `history_screen_test.dart` (the chart's days and top tempos, no target when the track's tempo isn't known, tapping points; the target line and subtitle; opening a track's history from the list passes the track's tempo as the target). One scheduling test now scrolls past the second chart to reach a recording. All 233 tests passing, `flutter analyze` clean. Chart layout checked by eye from a rendered screenshot.
+
+**Known limits**: like the accuracy chart, practice days are spaced evenly; section runs aren't separated from whole-track runs; a track whose tempo was changed shows only its current tempo as the target.
+
+### 5.8 Scheduled practice reminders
+
+Asked 2026-10-07 for each recording's three-dots menu; the user then placed it (2026-10-10) in the three-dots menu of each track on the main menu, before Rename and Delete, asked for More info... in that menu too, and asked for it to be a daily or weekly schedule rather than a one-time reminder.
+
+- [x] **The track's ⋮ menu on the main menu** (`Key('score_menu_<file>')`), in order: **Schedule practice** (or **Reschedule practice** once set), **Cancel scheduled practice** (when set), **Rename**, **Delete**, **More info...** (the ID / created / file dialog; the separate "More Info..." button on the card is gone). Recordings in History have only Add/Edit note and Delete in their ⋮ menu.
+- [x] **The schedule form** (`lib/widgets/schedule_practice_dialog.dart`): **Repeat** -- **Every day** (the default), **Weekly** (tick any days, Mon-Sun; today starts ticked; at least one is required), or **Once** (pick a date) -- and a **Time** (a new schedule starts at the next full hour). Rescheduling opens the form on the current schedule. Repeating schedules carry on until cancelled; a one-time one is gone once its moment has passed. **One schedule per track**: scheduling again replaces it (my call -- one schedule can already cover several days a week, and it keeps Cancel unambiguous).
+- [x] **How it reads** everywhere (the track's card, the confirmation, the greeting pop-up): "Every day, 18:00", "Every Mon, Wed, Fri, 18:00", "Weekdays, 07:30", "Weekends, 10:00", or for a one-time session "Tomorrow, 18:00". The notification says "Time to practice <track>" -- "Your practice session for <track> is now." The greeting lists schedules soonest-coming-round first.
+- [x] **Repeating on the phone**: a daily schedule is one notification set to repeat every day at that time; a weekly one is one notification per ticked day, each repeating every week on its day (flutter_local_notifications' `matchDateTimeComponents`) -- so they keep coming without the app running. Deleting a track cancels its schedule.
+- [x] **Plumbing**: `PracticeSchedule` / `ScheduledPractice` (`lib/services/practice_schedule.dart`: repeat kind, time, weekdays or date; next occurrence; notification ids per day; saved to `practice_schedule.json`, where sessions saved before repeating existed load as one-time ones) shared through `ScheduleScope`; `LocalReminderNotifier` (`lib/services/local_reminders.dart`) puts them on the phone with **flutter_local_notifications** (+ `timezone`, `flutter_timezone`, so times are the phone's wall-clock time). Notification permission is asked the first time something is scheduled, not at launch.
+- [x] **On-the-minute delivery**: recent Android allows exact-time reminders only with the "Alarms & reminders" permission, which is off by default. Without it reminders are still set but may come a few minutes late; the confirmation says so and offers **Be exact**, which opens that permission page. (`SCHEDULE_EXACT_ALARM` is declared; `USE_EXACT_ALARM` deliberately isn't -- app stores restrict it to alarm and calendar apps.)
+- [x] **Platform setup**: Android -- `POST_NOTIFICATIONS`, `RECEIVE_BOOT_COMPLETED` (reminders survive a restart) and `SCHEDULE_EXACT_ALARM` permissions, the plugin's two receivers, and core-library desugaring in `build.gradle.kts`. iOS -- the notification-centre delegate in `AppDelegate.swift`. `flutter build apk --debug` succeeded with this setup; the iOS side can't be built on this Windows machine.
+- [x] Tests (`schedule_and_greeting_test.dart`): next occurrence for daily (today or tomorrow), weekly (soonest chosen day; same day later or next week) and once; repeating sessions never expire; one distinct notification per weekly day; the descriptions; old saved sessions still load; JSON round trip; adding, nothing set for a past one-time session / a weekly one without days / no permission, a passed daily time starting tomorrow, approximate timing, replacing and cancelling, loading keeps repeating and drops past one-time sessions; and through the main menu -- the ⋮ order, the daily default at the next full hour, weekly on ticked days, weekly with no days blocked, once on a picked date, rescheduling opening on the current schedule, cancelling, More info...; History recordings offer no scheduling; the greeting lists schedules soonest first. All 212 tests passing, `flutter analyze` clean. Form layout checked by eye from a rendered screenshot.
+
+### 5.9 Greeting when the app opens
+
+Asked 2026-10-07: "every time the app is open, the app should say greetings -- definitely add more, but some examples are: 'Greetings, night owl,' 'Practicing instead of scrolling?'. It should be a pop-up that the user can delete. In the bottom of the pop-up, remind the user about the scheduled sessions/recordings."
+
+- [x] **When**: at launch, and on coming back to the app after **30 minutes or more** away -- a quick switch to another app and back doesn't count as opening it (my call, so the pop-up doesn't nag). `GreetingGate` (`lib/widgets/greeting_gate.dart`) wraps the main menu.
+- [x] **What**: a greeting picked at random from lines fitting the time of day (late night 22:00-04:59, morning, afternoon, evening) plus lines for any time -- 23 in all, including the user's two (`lib/services/greetings.dart`). Below it, **Scheduled practice**: the next three upcoming sessions ("Groove · Today, 18:30"), "and N more" beyond that, or a pointer to a track's ⋮ menu on the main menu if nothing is scheduled.
+- [x] **Closing it**: an X in the corner (or tapping outside). It can also be switched off entirely in Settings ("Greeting when the app opens", on by default) -- my addition, saved with the other settings. Settings and the schedule are now read before the first frame, so the launch greeting knows both.
+- [x] Tests: greetings fit the time of day (no night-owl lines in the morning and vice versa) with plenty of variety; the pop-up appears at launch with upcoming sessions listed under the greeting; it closes; it doesn't appear when switched off; it reappears after two hours away but not after five minutes. All 196 tests passing, `flutter analyze` clean.
+
+## Milestone 6 — Editor overhaul
+
+Status: **Not started**.
+
+## Milestone 7 — UI overhaul
+
+Status: **In progress** -- defined by the user one feature at a time rather than as a style chosen up front.
+
+- [x] **7.1 Colour notes by judgement** (built; not yet tried on a device)
+
+### 7.1 Colour notes by judgement
+
+Status: **Built; not yet tried on a real device.** Asked 2026-10-05: "a mode (that users can toggle on and off in settings in menu) that colors individual notes based on the judgement you got, therefore indicating perfect notes with yellow, missed notes with red, etc".
+
+- [x] **Settings screen** (new, `lib/screens/settings_screen.dart`), opened from a gear icon on the main menu's app bar (`Key('settings_button')`). One switch so far, "Colour notes by judgement" (`Key('setting_color_notes')`), **off by default**, with a key showing which colour is which judgement.
+- [x] **Settings plumbing** (new): `AppSettings` (`lib/services/app_settings.dart`) holds the preferences and notifies on change; saved to `app_settings.json` in the app's documents directory (`FileSettingsStore`) and loaded at app start. `SettingsScope` (`lib/widgets/settings_scope.dart`) makes them available to every screen (installed above the navigator in `main.dart`) and rebuilds screens that read them; screens shown without one (most tests) get the defaults.
+- [x] **The mode**: in **practice** (live, as each note is judged) and in **review**, each note is drawn -- notehead, stem, flag and accent mark -- in its judgement's colour: Perfect yellow, Great green, Good blue, Miss red. A **rest that was played in** (a Fail) is drawn in the Fail crimson. Notes not judged yet stay black; the count-in is never coloured; a Fail in unfilled space at the end of a measure has no rest to colour. Toggling it takes effect immediately, including on a review already open. `StaffNotationView.eventColors` (glyph cache now keyed by colour too); `judgementEventColors` in `judgement_style.dart`; `TimelineLayout.noteEvents`/`eventAt`. In practice the colours are only recomputed when a new judgement arrives, not on every playhead frame.
+- [x] **Perfect's colour changed everywhere** (banner, marks, notes) from amber-orange (`#FF8F00`) to a true yellow, `#D4A900`, darkened so it still reads on the light background -- the user asked for yellow, and the stock Material yellows are either too pale on white or lean orange.
+- [x] Tests: `note_colors_test.dart` (which event gets which colour, including a Fail rest and an uncoloured unfilled-end Fail; Perfect is yellow and Miss red by hue; the Settings switch toggles and saves, saved settings load; review coloured with the mode on, black with it off, and follows a live toggle); `practice_screen_test.dart` (notes take their colours one by one as a run is judged; with the mode off every staff stays black). All 168 tests passing, `flutter analyze` clean. Coloured staff checked by eye from a rendered PNG.
+
 ## Open questions (unresolved, not blocking Milestone 1)
 
 - Note/rhythm entry UI details beyond the basic tap grid (e.g. rolls/flams notation for rudiments)
 - Judgement windows: Perfect ±40ms is the user's; Great ±80ms and Good ±120ms are first guesses to revisit after real playing (see Milestone 4.2). Whether there should be one overall score is also open
 - Judging with headphones: calibration mode (Milestone 4.4) now covers it, untested on a device. Open: whether to allow judging with "Play rhythm sound" on when on headphones, and whether calibration should be per output device rather than one saved number
 - How stable the measured sound delay is from run to run on the real phone (shown at the end of each run) -- decides how far estimated runs can be trusted
-- Time signatures with a denominator other than 2 or 4 (e.g. 6/8, 3/8) — 1/4-16/4 and 1/2-8/2 are done, see Milestones 3 and 3.5
+- How compound meters (6/8, 9/8, 12/8) should be felt: in dotted-quarter beats (count-in and BPM by the dotted quarter) or in eighth notes (today's behaviour) -- deferred by the user, see Milestone 5.1
+- What else the UI overhaul (Milestone 7) should include -- the user is adding items one at a time
 - Whether/how to redesign the 1/4/1/8/1/16 duration buttons at the bottom of the editor — user deferred this to a future prompt (see Milestone 3)
-- Whether triplets should be entered/enforced as whole groups of three (currently one note per press, incomplete groups allowed), and whether the "units filled" line should show something more musical than raw 1/12-quarter-note units — see Milestone 3.5
+- Whether triplets should be entered/enforced as whole groups of three (currently one note per press, incomplete groups allowed) — see Milestone 3.5 (the fill counter is now in beats, Milestone 5.2)
