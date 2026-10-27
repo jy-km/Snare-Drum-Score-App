@@ -46,18 +46,24 @@ class LiveJudge {
   /// clicks are the count-in. Hits earlier than [judgingStartsAt] on the
   /// timeline are ignored rather than matched to notes -- they are the
   /// count-in clicks themselves, or the player tapping along with them.
+  /// [graceNotes] is as for [HitJudge].
   LiveJudge({
     required int sampleRate,
     required List<double> clickTimes,
     required List<double> noteTimes,
     List<(double, double)> rests = const [],
+    Set<int> graceNotes = const {},
     required this._judgingStartsAt,
-  })  : assert(clickTimes.isNotEmpty),
-        _detector = StreamingOnsetDetector(sampleRate: sampleRate),
-        _clickTimes = clickTimes,
-        _judge = HitJudge(noteTimes, rests: rests);
+  }) : assert(clickTimes.isNotEmpty),
+       _detector = StreamingOnsetDetector(sampleRate: sampleRate),
+       _clickTimes = clickTimes,
+       _judge = HitJudge(noteTimes, rests: rests, graceNotes: graceNotes);
 
   LiveJudgeState get state => _state;
+
+  /// How many hits the microphone has heard so far -- every one, judged or
+  /// not: the count-in's clicks, and anything played before or after it.
+  int get hitsHeard => _onsetTimes.length;
 
   /// See [HitJudge.counts].
   Map<Judgement, int> get counts => _judge.counts;
@@ -156,9 +162,7 @@ class LiveJudge {
     }
     // Any hit before this moment has already been reported by the detector,
     // so a note whose window closed before it really was not hit.
-    judged.addAll(
-      _judge.advanceTo(_detector.secondsReceived - _detector.latencySeconds - offset),
-    );
+    judged.addAll(_judge.advanceTo(_detector.secondsReceived - _detector.latencySeconds - offset));
     return judged;
   }
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/hit_judge.dart';
 import '../services/timeline_layout.dart';
+import 'app_theme.dart';
 import 'staff_notation_view.dart';
 
 /// How judgements look, wherever they're shown -- practice and review alike.
@@ -34,22 +35,20 @@ String judgementLabelWithDirection(JudgedHit hit) {
 bool _showsDirection(JudgedHit hit) =>
     hit.judgement == Judgement.great || hit.judgement == Judgement.good;
 
-Color judgementColor(Judgement judgement) {
+/// [judgement]'s colour in [palette] -- the app theme's, from
+/// [AppPalette.of], wherever there is a context to read it from.
+Color judgementColor(Judgement judgement, [AppPalette palette = AppPalette.light]) {
   switch (judgement) {
     case Judgement.perfect:
-      // Yellow, darkened enough to read on a light background (Material's
-      // stock yellows are either too pale for that or lean orange).
-      return const Color(0xFFD4A900);
+      return palette.perfect;
     case Judgement.great:
-      return Colors.green.shade700;
+      return palette.great;
     case Judgement.good:
-      return Colors.blue.shade700;
+      return palette.good;
     case Judgement.miss:
-      return Colors.red.shade700;
+      return palette.miss;
     case Judgement.fail:
-      // Crimson, darkened and pulled toward purple so it reads apart from
-      // Miss's red even at a glance.
-      return const Color(0xFF8E0E3A);
+      return palette.fail;
   }
 }
 
@@ -62,13 +61,14 @@ Map<int, Map<int, Color>> judgementEventColors(
   Iterable<JudgedHit> judgements, {
   required TimelineLayout layout,
   required double secondsPerUnit,
+  AppPalette palette = AppPalette.light,
 }) {
   final colors = <int, Map<int, Color>>{};
   for (final hit in judgements) {
     final noteIndex = hit.noteIndex;
     if (noteIndex != null) {
       final (measure, event) = layout.noteEvents[noteIndex];
-      (colors[measure] ??= {})[event] = judgementColor(hit.judgement);
+      (colors[measure] ??= {})[event] = judgementColor(hit.judgement, palette);
       continue;
     }
     final hitTime = hit.hitTimeSeconds;
@@ -78,7 +78,7 @@ Map<int, Map<int, Color>> judgementEventColors(
     if (measure == 0) continue; // the count-in has no rests
     final event = layout.eventAt(measure, units - layout.starts[measure]);
     if (event == null || !layout.measureAt(measure).events[event].isRest) continue;
-    (colors[measure] ??= {})[event] = judgementColor(Judgement.fail);
+    (colors[measure] ??= {})[event] = judgementColor(Judgement.fail, palette);
   }
   return colors;
 }
@@ -104,6 +104,7 @@ String offsetText(double offsetSeconds) {
   required List<double> noteTimes,
   required double secondsPerUnit,
   bool withOffset = false,
+  AppPalette palette = AppPalette.light,
 }) {
   final noteIndex = hit.noteIndex;
   final noteSeconds = noteIndex == null ? null : noteTimes[noteIndex];
@@ -121,7 +122,7 @@ String offsetText(double offsetSeconds) {
     measureIndex,
     StaffMark(
       units: units - layout.starts[measureIndex],
-      color: judgementColor(hit.judgement),
+      color: judgementColor(hit.judgement, palette),
       isAbsence: hit.hitTimeSeconds == null,
       // Just the signed number under the staff: a unit would crowd the
       // labels of closely spaced notes.

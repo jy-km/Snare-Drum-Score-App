@@ -7,9 +7,11 @@ import 'services/app_settings.dart';
 import 'services/click_sound.dart';
 import 'services/local_reminders.dart';
 import 'services/practice_schedule.dart';
+import 'widgets/app_theme.dart';
 import 'widgets/greeting_gate.dart';
 import 'widgets/schedule_scope.dart';
 import 'widgets/settings_scope.dart';
+import 'widgets/swipe_back.dart';
 
 Future<void> main() async {
   // rootBundle.load (used by ClickSound.preload below) needs the widgets
@@ -41,21 +43,45 @@ class SnareDrumScoreApp extends StatelessWidget {
   final AppSettings settings;
   final PracticeSchedule schedule;
 
-  const SnareDrumScoreApp({super.key, required this.settings, required this.schedule});
+  /// For going back a screen on a swipe ([SwipeBack]), from above the
+  /// navigator.
+  final _navigatorKey = GlobalKey<NavigatorState>();
+
+  SnareDrumScoreApp({super.key, required this.settings, required this.schedule});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'MyTrak',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+    // Rebuilt when the settings change, for the light/dark choice.
+    return ListenableBuilder(
+      listenable: settings,
+      builder: (context, _) => MaterialApp(
+        title: 'MyTrak',
+        theme: buildAppTheme(Brightness.light),
+        darkTheme: buildAppTheme(Brightness.dark),
+        themeMode: _themeMode(settings.appearance),
+        navigatorKey: _navigatorKey,
+        // Above the navigator, so every screen pushed later sees the settings
+        // and can be swiped away.
+        builder: (context, child) => SettingsScope(
+          settings: settings,
+          child: ScheduleScope(
+            schedule: schedule,
+            child: SwipeBack(navigatorKey: _navigatorKey, child: child!),
+          ),
+        ),
+        home: const GreetingGate(child: ScoreListScreen()),
       ),
-      // Above the navigator, so every screen pushed later sees the settings.
-      builder: (context, child) => SettingsScope(
-        settings: settings,
-        child: ScheduleScope(schedule: schedule, child: child!),
-      ),
-      home: const GreetingGate(child: ScoreListScreen()),
     );
+  }
+
+  static ThemeMode _themeMode(Appearance appearance) {
+    switch (appearance) {
+      case Appearance.system:
+        return ThemeMode.system;
+      case Appearance.light:
+        return ThemeMode.light;
+      case Appearance.dark:
+        return ThemeMode.dark;
+    }
   }
 }

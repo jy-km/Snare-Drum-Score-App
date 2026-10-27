@@ -3,14 +3,21 @@ import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 
+import '../models/rhythm_score.dart';
 import '../services/click_sound.dart';
+import '../services/dynamics_check.dart';
 import '../services/hit_judge.dart';
 import '../services/practice_history.dart';
 import '../services/run_review.dart';
+import '../widgets/app_theme.dart';
+import '../widgets/dynamics_results.dart';
 import '../widgets/judgement_style.dart';
+import '../widgets/offset_chart.dart';
 import '../widgets/settings_scope.dart';
 import '../widgets/staff_notation_view.dart';
+import '../widgets/waveform_view.dart';
 
 /// Goes back over a judged practice run: every measure with each hit marked
 /// where it landed (and labelled with how far off it was), the notes that
@@ -42,12 +49,11 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
 
   final _player = AudioPlayer(playerId: 'review_replay');
   late final AnimationController _replay;
-  late final Map<int, List<StaffMark>> _marks = _buildMarks();
-  late final Map<int, Map<int, Color>> _noteColors = judgementEventColors(
-    _review.judgements,
-    layout: _review.layout,
-    secondsPerUnit: _review.secondsPerUnit,
-  );
+  // Worked out once per palette (it changes only with light/dark), in
+  // [_colorWith].
+  AppPalette? _palette;
+  Map<int, List<StaffMark>> _marks = const {};
+  Map<int, Map<int, Color>> _noteColors = const {};
   late final List<GlobalKey> _measureKeys =
       List.generate(widget.review.layout.measureCount, (_) => GlobalKey());
 
@@ -59,7 +65,23 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
   /// The timeline measure the playhead is in, while replaying.
   int? _replayMeasure;
 
+  /// Whether the replay keeps the measure being played on screen. The
+  /// player scrolling back up takes over from it until the next replay; the
+  /// replay itself plays on.
+  bool _followPlayhead = true;
+
+  late final _scrollController = ScrollController()..addListener(_onScroll);
+
   RunReview get _review => widget.review;
+
+  /// How the score's dynamics were played, from the recording.
+  late final DynamicsCheck _dynamics = DynamicsCheck.of(_review);
+
+  /// The hairpins under each of the score's measures (not the count-in).
+  late final List<List<HairpinSegment>> _hairpins = [
+    for (var measure = 0; measure < _review.layout.score.measures.length; measure++)
+      _review.layout.score.hairpinSegmentsIn(measure),
+  ];
 
   @override
   void initState() {
@@ -80,10 +102,23 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
     _audioFallbackTimer?.cancel();
     _replay.dispose();
     _player.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  Map<int, List<StaffMark>> _buildMarks() {
+  void _colorWith(AppPalette palette) {
+    if (palette == _palette) return;
+    _palette = palette;
+    _marks = _buildMarks(palette);
+    _noteColors = judgementEventColors(
+      _review.judgements,
+      layout: _review.layout,
+      secondsPerUnit: _review.secondsPerUnit,
+      palette: palette,
+    );
+  }
+
+  Map<int, List<StaffMark>> _buildMarks(AppPalette palette) {
     final marks = <int, List<StaffMark>>{};
     for (final hit in _review.judgements) {
       final (measureIndex, mark) = judgementMark(
@@ -92,6 +127,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
         noteTimes: _review.noteTimes,
         secondsPerUnit: _review.secondsPerUnit,
         withOffset: true,
+        palette: palette,
       );
       (marks[measureIndex] ??= []).add(mark);
     }
@@ -103,6 +139,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
 
   void _startReplay() {
     _started = false;
+    _followPlayhead = true;
     setState(() => _replaying = true);
     _positionSubscription = _player.onPositionChanged.listen((position) {
       if (_started || position < _minStartupPosition) return;
@@ -141,7 +178,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
     final measure = _review.layout.indexAt(_replayUnits);
     if (measure != _replayMeasure) {
       _replayMeasure = measure;
-      _scrollTo(measure);
+      if (_followPlayhead) _scrollTo(measure);
     }
     setState(() {});
   }
@@ -161,6 +198,24 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
     });
   }
 
+  /// Stops following the playhead once the player scrolls the screen back
+  /// up during a replay. Only their own scrolling counts: the replay's own
+  /// scrolling to a measure leaves the scroll direction alone.
+  void _onScroll() {
+    if (!_replaying || !_followPlayhead) return;
+    if (_scrollController.position.userScrollDirection == ScrollDirection.forward) {
+      _followPlayhead = false;
+    }
+  }
+
+  /// Scrolls to a measure the player asked to see (from the chart or the
+  /// "Most off" list) -- which, during a replay, also stops following the
+  /// playhead, or it would take them straight back.
+  void _showMeasure(int timelineMeasure) {
+    _followPlayhead = false;
+    _scrollTo(timelineMeasure);
+  }
+
   void _scrollTo(int timelineMeasure) {
     final context = _measureKeys[timelineMeasure].currentContext;
     if (context == null) return;
@@ -174,6 +229,8 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
+    final palette = AppPalette.of(context);
+    _colorWith(palette);
     final layout = _review.layout;
     final mostOff = _review.mostOff();
     final noteColors = SettingsScope.of(context).colorNotesByJudgement
@@ -185,6 +242,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
       appBar: AppBar(title: Text('Review: ${layout.score.title}')),
       body: SafeArea(
         child: SingleChildScrollView(
+          controller: _scrollController,
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -229,6 +287,23 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                   style: textTheme.bodySmall,
                 ),
               const SizedBox(height: 12),
+              Text('Early or late, note by note', style: textTheme.titleSmall),
+              const SizedBox(height: 4),
+              OffsetChart(
+                key: const Key('review_offset_chart'),
+                review: _review,
+                onSelect: (hit) => _showMeasure(_review.timelineMeasureOf(hit)),
+              ),
+              if (_dynamics.hasChecks) ...[
+                const SizedBox(height: 12),
+                Text('Dynamics', style: textTheme.titleSmall),
+                DynamicsResults(
+                  key: const Key('review_dynamics'),
+                  check: _dynamics,
+                  layout: layout,
+                ),
+              ],
+              const SizedBox(height: 12),
               Text('Most off', style: textTheme.titleSmall),
               if (mostOff.isEmpty)
                 const Text('Nothing: every note you hit was Perfect.')
@@ -239,8 +314,8 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                     text: '${_review.locate(hit)}: ${judgementLabelWithDirection(hit)}, '
                         '${offsetText(hit.offsetSeconds!)} '
                         '(${hit.offsetSeconds! < 0 ? 'early' : 'late'})',
-                    color: judgementColor(hit.judgement),
-                    onTap: () => _scrollTo(_review.timelineMeasureOf(hit)),
+                    color: judgementColor(hit.judgement, palette),
+                    onTap: () => _showMeasure(_review.timelineMeasureOf(hit)),
                   ),
               if (missed.isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -248,7 +323,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                 Text(
                   missed.map(_review.locate).join('; '),
                   key: const Key('review_missed'),
-                  style: TextStyle(color: judgementColor(Judgement.miss)),
+                  style: TextStyle(color: judgementColor(Judgement.miss, palette)),
                 ),
               ],
               const SizedBox(height: 12),
@@ -259,6 +334,15 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                   icon: Icon(_replaying ? Icons.stop : Icons.play_arrow),
                   label: Text(_replaying ? 'Stop' : 'Replay'),
                 ),
+              ),
+              // Under Replay, whose playhead it follows.
+              const SizedBox(height: 12),
+              Text('Sound wave', style: textTheme.titleSmall),
+              WaveformView(
+                key: const Key('review_waveform'),
+                review: _review,
+                playheadSeconds: _replaying ? _replayUnits * _review.secondsPerUnit : null,
+                onSelect: (hit) => _showMeasure(_review.timelineMeasureOf(hit)),
               ),
               const SizedBox(height: 12),
               for (var index = 0; index < layout.measureCount; index++)
@@ -278,6 +362,7 @@ class _ReviewScreenState extends State<ReviewScreen> with SingleTickerProviderSt
                             : null,
                         marks: _marks[index] ?? const [],
                         eventColors: noteColors[index] ?? const {},
+                        hairpins: index == 0 ? const [] : _hairpins[index - 1],
                       ),
                     ],
                   ),

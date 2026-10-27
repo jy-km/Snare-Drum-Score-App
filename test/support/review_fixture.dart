@@ -8,13 +8,18 @@ import 'package:snare_drum_score_app/services/timeline_layout.dart';
 /// A finished run to save, review or list: 60 BPM, one measure of four
 /// quarter notes (due at 4-7s after a 4s count-in), played Perfect, Great+,
 /// Good- and missed, with a hit in no rest at all.
-RunReview sampleReview({String title = 'Groove', List<JudgedHit>? judgements}) {
+RunReview sampleReview({
+  String title = 'Groove',
+  List<JudgedHit>? judgements,
+  TempoBeat tempoBeat = TempoBeat.quarter,
+}) {
   var measure = Measure.empty();
   for (var i = 0; i < 4; i++) {
     measure = measure.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal));
   }
-  final score = RhythmScore(title: title, tempoBpm: 60, measures: [measure]);
-  final judged = judgements ??
+  final score = RhythmScore(title: title, tempoBpm: 60, tempoBeat: tempoBeat, measures: [measure]);
+  final judged =
+      judgements ??
       const [
         JudgedHit(Judgement.perfect, noteIndex: 0, offsetSeconds: 0.01, hitTimeSeconds: 4.01),
         JudgedHit(Judgement.great, noteIndex: 1, offsetSeconds: 0.06, hitTimeSeconds: 5.06),

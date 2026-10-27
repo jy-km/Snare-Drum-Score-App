@@ -26,14 +26,14 @@ void main() {
 
     expect(find.text('4 of 4 beats filled'), findsOneWidget);
 
-    final quarterButton =
-        tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
-    final eighthButton =
-        tester.widget<ElevatedButton>(find.byKey(const Key('duration_eighth')));
-    final sixteenthButton =
-        tester.widget<ElevatedButton>(find.byKey(const Key('duration_sixteenth')));
-    final tripletButton =
-        tester.widget<ElevatedButton>(find.byKey(const Key('duration_eighth_triplet')));
+    final quarterButton = tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
+    final eighthButton = tester.widget<ElevatedButton>(find.byKey(const Key('duration_eighth')));
+    final sixteenthButton = tester.widget<ElevatedButton>(
+      find.byKey(const Key('duration_sixteenth')),
+    );
+    final tripletButton = tester.widget<ElevatedButton>(
+      find.byKey(const Key('duration_eighth_triplet')),
+    );
     expect(quarterButton.onPressed, isNull);
     expect(eighthButton.onPressed, isNull);
     expect(sixteenthButton.onPressed, isNull);
@@ -43,7 +43,7 @@ void main() {
   testWidgets('Three eighth-note triplets fill exactly one quarter note', (tester) async {
     await pumpEditor(tester);
 
-    expect(find.widgetWithText(ElevatedButton, 'Triplet'), findsOneWidget);
+    expect(find.widgetWithText(ElevatedButton, '1/8³'), findsOneWidget);
 
     for (var i = 0; i < 3; i++) {
       await tester.tap(find.byKey(const Key('duration_eighth_triplet')));
@@ -71,8 +71,9 @@ void main() {
     expect(find.text('4 of 4 beats filled'), findsOneWidget);
   });
 
-  testWidgets('On a narrow screen the note buttons scroll sideways instead of overflowing',
-      (tester) async {
+  testWidgets('On a narrow screen the note buttons scroll sideways instead of overflowing', (
+    tester,
+  ) async {
     // The test font is much wider than the real one, so "narrow" here is
     // wider than a phone: the widest screen the note buttons still don't fit
     // on, without the other rows running out of room too.
@@ -172,13 +173,13 @@ void main() {
       await tester.pump();
     }
     expect(find.text('5 of 7 beats filled'), findsOneWidget);
-    final quarterButton =
-        tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
+    final quarterButton = tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
     expect(quarterButton.onPressed, isNotNull);
   });
 
-  testWidgets('A half-note meter (e.g. 3/2) is selectable and sizes the measure correctly',
-      (tester) async {
+  testWidgets('A half-note meter (e.g. 3/2) is selectable and sizes the measure correctly', (
+    tester,
+  ) async {
     await pumpEditor(tester);
 
     // The combined list (16 + divider + 8 entries) can overflow the popup's
@@ -243,52 +244,61 @@ void main() {
       }
     }
 
-    testWidgets('A meter applies from the measure it is chosen on, not to earlier ones',
-        (tester) async {
+    testWidgets('A meter applies from the measure it is chosen on, not to earlier ones', (
+      tester,
+    ) async {
       await pumpEditor(tester);
 
       await goToMeasure(tester, 2);
       await selectMeter(tester, 'meter_option_3_4');
       expect(find.text('Meter: 3/4'), findsOneWidget);
 
-      for (final (index, expected) in [(0, '4/4'), (1, '4/4'), (2, '3/4'), (5, '3/4'), (7, '3/4')]) {
+      for (final (index, expected) in [
+        (0, '4/4'),
+        (1, '4/4'),
+        (2, '3/4'),
+        (5, '3/4'),
+        (7, '3/4'),
+      ]) {
         await goToMeasure(tester, index);
         expect(find.text('Meter: $expected'), findsOneWidget, reason: 'measure ${index + 1}');
       }
     });
 
     testWidgets(
-        'Going back to change a meter leaves later measures that already have notes alone',
-        (tester) async {
-      await pumpEditor(tester);
+      'Going back to change a meter leaves later measures that already have notes alone',
+      (tester) async {
+        await pumpEditor(tester);
 
-      // Measures 2 and 4 get notes in 4/4.
-      await goToMeasure(tester, 1);
-      await addQuarters(tester, 4);
-      await goToMeasure(tester, 3);
-      await addQuarters(tester, 2);
+        // Measures 2 and 4 get notes in 4/4.
+        await goToMeasure(tester, 1);
+        await addQuarters(tester, 4);
+        await goToMeasure(tester, 3);
+        await addQuarters(tester, 2);
 
-      // Now measure 1 (and on) changes to 3/4.
-      await goToMeasure(tester, 0);
-      await selectMeter(tester, 'meter_option_3_4');
-      expect(find.textContaining('Measures 2, 4 already have notes'), findsOneWidget);
+        // Now measure 1 (and on) changes to 3/4.
+        await goToMeasure(tester, 0);
+        await selectMeter(tester, 'meter_option_3_4');
+        expect(find.textContaining('Measures 2, 4 already have notes'), findsOneWidget);
 
-      for (final (index, meter, filled) in [
-        (0, '3/4', '0 of 3 beats'),
-        (1, '4/4', '4 of 4 beats'), // filled: untouched
-        (2, '3/4', '0 of 3 beats'),
-        (3, '4/4', '2 of 4 beats'), // has notes: untouched, though not full
-        (4, '3/4', '0 of 3 beats'),
-        (7, '3/4', '0 of 3 beats'),
-      ]) {
-        await goToMeasure(tester, index);
-        expect(find.text('Meter: $meter'), findsOneWidget, reason: 'measure ${index + 1}');
-        expect(find.text('$filled filled'), findsOneWidget, reason: 'measure ${index + 1}');
-      }
-    });
+        for (final (index, meter, filled) in [
+          (0, '3/4', '0 of 3 beats'),
+          (1, '4/4', '4 of 4 beats'), // filled: untouched
+          (2, '3/4', '0 of 3 beats'),
+          (3, '4/4', '2 of 4 beats'), // has notes: untouched, though not full
+          (4, '3/4', '0 of 3 beats'),
+          (7, '3/4', '0 of 3 beats'),
+        ]) {
+          await goToMeasure(tester, index);
+          expect(find.text('Meter: $meter'), findsOneWidget, reason: 'measure ${index + 1}');
+          expect(find.text('$filled filled'), findsOneWidget, reason: 'measure ${index + 1}');
+        }
+      },
+    );
 
-    testWidgets('Notes that no longer fit the new meter are removed from the end, and it says so',
-        (tester) async {
+    testWidgets('Notes that no longer fit the new meter are removed from the end, and it says so', (
+      tester,
+    ) async {
       await pumpEditor(tester);
       await addQuarters(tester, 4);
 

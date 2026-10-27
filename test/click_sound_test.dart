@@ -29,4 +29,44 @@ void main() {
       expect(await ClickSound.accentSamples(instrument), isNotEmpty);
     }
   });
+
+  test('Marcato is at least as loud as the accent, and a grace stroke much quieter', () async {
+    int peak(List<int> samples) => samples.map((s) => s.abs()).reduce((a, b) => a > b ? a : b);
+    final accent = peak(await ClickSound.accentSamples(Instrument.snare));
+    final normal = peak(await ClickSound.normalSamples(Instrument.snare));
+
+    expect(peak(await ClickSound.marcatoSamples(Instrument.snare)), greaterThan(accent));
+    expect(peak(await ClickSound.graceSamples(Instrument.snare)), lessThan(normal));
+    // The kick's recording is already at full volume: no louder, no clipping.
+    expect(
+      peak(await ClickSound.marcatoSamples(Instrument.kick)),
+      peak(await ClickSound.accentSamples(Instrument.kick)),
+    );
+  });
+
+  test('Grace strokes come just before their note, closing up at fast tempos', () {
+    const msPerUnit = 60000 / 100 / RhythmGrid.unitsPerQuarterNote; // 100 BPM
+    int samples(double ms) => (ms * ClickSound.sampleRate / 1000).round();
+
+    expect(ClickSound.graceLeadSamples(Ornament.none, msPerUnit), isEmpty);
+    expect(ClickSound.graceLeadSamples(Ornament.flam, msPerUnit), [samples(30)]);
+    expect(ClickSound.graceLeadSamples(Ornament.drag, msPerUnit), [samples(60), samples(30)]);
+
+    // At 300 BPM a sixteenth is 50ms: a drag's strokes fit inside it.
+    const fastMsPerUnit = 60000 / 300 / RhythmGrid.unitsPerQuarterNote;
+    expect(ClickSound.graceLeadSamples(Ornament.drag, fastMsPerUnit), [samples(50), samples(25)]);
+  });
+
+  test('A roll sounds a stroke every sixteenth for the length of its note', () {
+    List<int> strokes(NoteValue value, [Ornament ornament = Ornament.roll]) =>
+        ClickSound.rollStrokeUnits(RhythmEvent(value, EventType.normal, ornament: ornament));
+
+    expect(strokes(NoteValue.quarter), [3, 6, 9], reason: 'four strokes with the note itself');
+    expect(strokes(NoteValue.half), [3, 6, 9, 12, 15, 18, 21]);
+    expect(strokes(NoteValue.eighth), [3]);
+    expect(strokes(NoteValue.sixteenth), isEmpty);
+    expect(strokes(NoteValue.eighthTriplet), isEmpty, reason: 'no room for a second sixteenth');
+    expect(strokes(NoteValue.quarter, Ornament.none), isEmpty);
+    expect(strokes(NoteValue.quarter, Ornament.flam), isEmpty);
+  });
 }

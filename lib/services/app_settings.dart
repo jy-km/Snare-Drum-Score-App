@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+/// Light or dark pages, or whichever the phone is set to.
+enum Appearance { system, light, dark }
+
 /// The user's app-wide preferences, as set on the Settings screen. Screens
 /// listen to it (through `SettingsScope`) and redraw when it changes.
 class AppSettings extends ChangeNotifier {
@@ -37,6 +40,29 @@ class AppSettings extends ChangeNotifier {
     _save();
   }
 
+  /// Confetti when a practice run ends above 90% accuracy (more for one
+  /// all Perfect). On by default.
+  bool get confetti => _confetti;
+  bool _confetti = true;
+
+  set confetti(bool value) {
+    if (value == _confetti) return;
+    _confetti = value;
+    notifyListeners();
+    _save();
+  }
+
+  /// Light or dark pages. Follows the phone's own setting by default.
+  Appearance get appearance => _appearance;
+  Appearance _appearance = Appearance.system;
+
+  set appearance(Appearance value) {
+    if (value == _appearance) return;
+    _appearance = value;
+    notifyListeners();
+    _save();
+  }
+
   /// Reads the saved preferences, if any. Until it completes (or if it
   /// fails) the defaults apply.
   Future<void> load() async {
@@ -46,6 +72,8 @@ class AppSettings extends ChangeNotifier {
       final saved = await store.load();
       _colorNotesByJudgement = saved['colorNotesByJudgement'] as bool? ?? false;
       _showGreeting = saved['showGreeting'] as bool? ?? true;
+      _confetti = saved['confetti'] as bool? ?? true;
+      _appearance = Appearance.values.asNameMap()[saved['appearance']] ?? Appearance.system;
       notifyListeners();
     } catch (e) {
       debugPrint('Could not load settings: $e');
@@ -58,6 +86,8 @@ class AppSettings extends ChangeNotifier {
     store.save({
       'colorNotesByJudgement': _colorNotesByJudgement,
       'showGreeting': _showGreeting,
+      'confetti': _confetti,
+      'appearance': _appearance.name,
     }).catchError((Object e) {
       debugPrint('Could not save settings: $e');
     });

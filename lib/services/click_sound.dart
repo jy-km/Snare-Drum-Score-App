@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
@@ -11,10 +12,19 @@ import '../models/rhythm_score.dart';
 /// recording attenuated to [_normalGain] and "accent" is the recording as-is
 /// -- an amplitude-only approximation of the real dynamic difference a
 /// second, harder-hit recording would have, but keeps the asset count to one
-/// file per instrument.
+/// file per instrument. "Marcato" is the recording turned up by as much of
+/// [_marcatoGain] as it has room for before clipping, and a grace stroke (of
+/// a flam or drag) is the recording at [_graceGain]. Dynamics written in
+/// the score turn each note up or down from there ([dynamicGains]).
 class ClickSound {
   static const int sampleRate = 44100;
   static const double _normalGain = 0.5;
+  static const double _marcatoGain = 1.4;
+  static const double _graceGain = 0.25;
+
+  /// How long before its note a flam's grace stroke sounds, and how far
+  /// apart a drag's two are.
+  static const double _graceSpacingMs = 30;
 
   static final Map<Instrument, Future<Int16List>> _rawSamples = {};
 
@@ -32,6 +42,157 @@ class ClickSound {
   /// Raw mono samples (no WAV header) for [instrument] at accent dynamic
   /// (the recording as bundled, unscaled).
   static Future<Int16List> accentSamples(Instrument instrument) => _samplesFor(instrument);
+
+  /// Samples for [instrument] at marcato dynamic: louder than the accent by
+  /// up to [_marcatoGain], less where the recording is already near full
+  /// volume (the kick's is at it, so its marcato sounds like its accent).
+  static Future<Int16List> marcatoSamples(Instrument instrument) async {
+    final raw = await _samplesFor(instrument);
+    final room = headroom(raw);
+    return _scaled(raw, room < _marcatoGain ? room : _marcatoGain);
+  }
+
+  /// Samples for one grace stroke of a flam or drag on [instrument].
+  static Future<Int16List> graceSamples(Instrument instrument) async {
+    final raw = await _samplesFor(instrument);
+    return _scaled(raw, _graceGain);
+  }
+
+  /// The samples a note of [type] sounds with, out of the three dynamics.
+  static Int16List samplesForType(
+    EventType type, {
+    required Int16List normal,
+    required Int16List accent,
+    required Int16List marcato,
+  }) {
+    switch (type) {
+      case EventType.marcato:
+        return marcato;
+      case EventType.accent:
+        return accent;
+      case EventType.rest:
+      case EventType.normal:
+        return normal;
+    }
+  }
+
+  /// How much louder (positive) or softer than its plain sound each marking
+  /// plays, in decibels -- mf is the sound as it has always been, and each
+  /// step either side is 4 dB. My choice, to tune by ear.
+  static const Map<DynamicMark, double> dynamicDb = {
+    DynamicMark.pp: -12,
+    DynamicMark.p: -8,
+    DynamicMark.mp: -4,
+    DynamicMark.mf: 0,
+    DynamicMark.f: 4,
+    DynamicMark.ff: 8,
+  };
+
+  /// How far a hairpin with no marking to lead into goes: two steps.
+  static const double _hairpinWithoutTargetDb = 8;
+
+  /// How loud each note of [score] plays, as a factor on its sound (1 for
+  /// as it has always been), by note index. Notes before the first marking
+  /// play at mf. A hairpin slides, in decibels, from the level at its first
+  /// note to the marking it leads into -- or, with none, two steps up or
+  /// down -- by where each note falls in it; the level it reaches holds
+  /// until the next marking. A score without dynamics is all 1s.
+  static List<double> dynamicGains(RhythmScore score) {
+    final notes = score.notes;
+    final starts = score.noteStartUnits;
+    final db = List<double>.filled(notes.length, 0);
+    final spans = {for (final span in score.hairpinSpans) span.firstNote: span};
+    var current = 0.0;
+    var note = 0;
+    while (note < notes.length) {
+      final mark = notes[note].dynamicMark;
+      if (mark != null) current = dynamicDb[mark]!;
+      final span = spans[note];
+      if (span == null || span.lastNote == note) {
+        db[note] = current;
+        note++;
+        continue;
+      }
+      final target = notes[span.lastNote].dynamicMark;
+      final up = span.kind == Hairpin.crescendo;
+      final end = target != null
+          ? dynamicDb[target]!
+          : (current + (up ? 1 : -1) * _hairpinWithoutTargetDb).clamp(
+              dynamicDb[DynamicMark.pp]!,
+              dynamicDb[DynamicMark.ff]!,
+            );
+      final from = starts[span.firstNote];
+      final length = starts[span.lastNote] - from;
+      for (var index = span.firstNote; index <= span.lastNote; index++) {
+        db[index] = current + (end - current) * (starts[index] - from) / length;
+      }
+      current = end;
+      note = span.lastNote + 1;
+    }
+    return [for (final level in db) level == 0 ? 1.0 : _gainFor(level)];
+  }
+
+  static double _gainFor(double db) => math.pow(10, db / 20).toDouble();
+
+  /// The most [samples] can be turned up without clipping.
+  static double headroom(Int16List samples) {
+    var peak = 1;
+    for (final sample in samples) {
+      if (sample.abs() > peak) peak = sample.abs();
+    }
+    return 32767 / peak;
+  }
+
+  /// Adds [samples], turned up or down by [gain] -- but no further up than
+  /// [headroom] allows -- into [buffer] from [start] on.
+  static void mixInto(
+    Int32List buffer,
+    int start,
+    Int16List samples, {
+    double gain = 1,
+    double headroom = double.infinity,
+  }) {
+    final factor = gain > headroom ? headroom : gain;
+    if (factor == 1) {
+      for (var i = 0; i < samples.length; i++) {
+        buffer[start + i] += samples[i];
+      }
+      return;
+    }
+    for (var i = 0; i < samples.length; i++) {
+      buffer[start + i] += (samples[i] * factor).round();
+    }
+  }
+
+  /// Where the strokes of a rolled note fall after its first one, in
+  /// [RhythmGrid] units from the start of the note: one every sixteenth for
+  /// as long as the note lasts (a rolled quarter is four strokes in all).
+  /// Empty for a note that isn't a roll, or is too short to hold a second
+  /// stroke. A stand-in until there is a recorded roll to play instead.
+  static List<int> rollStrokeUnits(RhythmEvent event) {
+    if (event.ornament != Ornament.roll) return const [];
+    final spacing = NoteValue.sixteenth.units;
+    return [
+      for (var units = spacing; units + spacing <= event.durationUnits; units += spacing) units,
+    ];
+  }
+
+  /// How many samples before its note each grace stroke of [ornament]
+  /// starts, earliest first, at [msPerUnit] per [RhythmGrid] unit. The
+  /// strokes close up at fast tempos so they never reach back further than
+  /// a sixteenth note.
+  static List<int> graceLeadSamples(Ornament ornament, double msPerUnit) {
+    final count = ornament.graceNoteCount;
+    if (count == 0) return const [];
+    final longestLeadMs = NoteValue.sixteenth.units * msPerUnit;
+    final spacingMs = _graceSpacingMs * count > longestLeadMs
+        ? longestLeadMs / count
+        : _graceSpacingMs;
+    return [
+      for (var stroke = count; stroke >= 1; stroke--)
+        (stroke * spacingMs * sampleRate / 1000).round(),
+    ];
+  }
 
   static Future<Int16List> _samplesFor(Instrument instrument) {
     return _rawSamples.putIfAbsent(instrument, () {
@@ -115,7 +276,8 @@ class ClickSound {
       // a file recorded at a different rate would silently play back at the
       // wrong speed/pitch instead of erroring, so fail loudly here instead.
       throw FormatException(
-          'Expected a $sampleRate Hz WAV file, got $fileSampleRate Hz -- resample the asset');
+        'Expected a $sampleRate Hz WAV file, got $fileSampleRate Hz -- resample the asset',
+      );
     }
 
     final sampleCount = dataLength ~/ 2;

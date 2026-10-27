@@ -44,8 +44,10 @@ class TimeSignature {
   const TimeSignature(this.beats, this.beatUnit);
 
   /// 4/4.
-  static const common =
-      TimeSignature(RhythmGrid.defaultBeatsPerMeasure, RhythmGrid.defaultBeatUnit);
+  static const common = TimeSignature(
+    RhythmGrid.defaultBeatsPerMeasure,
+    RhythmGrid.defaultBeatUnit,
+  );
 
   /// A measure's capacity in [RhythmGrid] units under this time signature.
   int get units => beats * unitsPerBeat;
@@ -66,6 +68,37 @@ class TimeSignature {
 
   @override
   String toString() => '$beats/$beatUnit';
+}
+
+/// The note a score's tempo counts: "150 BPM" in [half] notes is 150 half
+/// notes -- 300 quarter notes -- a minute. Independent of the time
+/// signature; the count-in still clicks the meter's own beat.
+enum TempoBeat {
+  eighth(RhythmGrid.unitsPerQuarterNote ~/ 2, '1/8'),
+  quarter(RhythmGrid.unitsPerQuarterNote, '1/4'),
+
+  /// A quarter note and a half: the beat of 6/8, 9/8 and 12/8 felt in
+  /// twos, threes and fours.
+  dottedQuarter(RhythmGrid.unitsPerQuarterNote * 3 ~/ 2, '1/4.'),
+  half(RhythmGrid.unitsPerQuarterNote * 2, '1/2');
+
+  /// Length of one beat in [RhythmGrid] units.
+  final int units;
+
+  /// As the editor's note-length buttons write it.
+  final String label;
+
+  const TempoBeat(this.units, this.label);
+
+  /// Milliseconds per [RhythmGrid] unit at [bpm] of these beats.
+  double msPerUnit(num bpm) => 60000 / bpm / units;
+
+  /// [bpm] of [from] beats, counted in these beats instead.
+  double convert(num bpm, TempoBeat from) => bpm * from.units / units;
+
+  /// "150 BPM", with the beat note written out unless it is the usual
+  /// quarter note: "150 BPM (1/2)".
+  String describe(int bpm) => this == quarter ? '$bpm BPM' : '$bpm BPM ($label)';
 }
 
 /// Which drum sounds when a note is hit. Chosen per-score -- affects both
@@ -96,14 +129,18 @@ extension InstrumentMidiNote on Instrument {
 }
 
 /// [eighthTriplet] is one note of an eighth-note triplet: three of them span
-/// one quarter note.
-enum NoteValue { quarter, eighth, eighthTriplet, sixteenth }
+/// one quarter note. Likewise three [quarterTriplet]s span a half note (three
+/// notes across two beats) and three [sixteenthTriplet]s an eighth note (six
+/// to the beat).
+enum NoteValue { half, quarter, eighth, eighthTriplet, sixteenth, quarterTriplet, sixteenthTriplet }
 
 extension NoteValueUnits on NoteValue {
   /// Duration in [RhythmGrid] units (out of a measure's capacity, which
   /// depends on the score's meter).
   int get units {
     switch (this) {
+      case NoteValue.half:
+        return 24;
       case NoteValue.quarter:
         return 12;
       case NoteValue.eighth:
@@ -112,11 +149,23 @@ extension NoteValueUnits on NoteValue {
         return 4;
       case NoteValue.sixteenth:
         return 3;
+      case NoteValue.quarterTriplet:
+        return 8;
+      case NoteValue.sixteenthTriplet:
+        return 2;
     }
   }
+
+  /// Whether this is one note of a triplet -- written under a "3".
+  bool get isTriplet =>
+      this == NoteValue.quarterTriplet ||
+      this == NoteValue.eighthTriplet ||
+      this == NoteValue.sixteenthTriplet;
 }
 
-enum EventType { rest, normal, accent }
+/// [marcato] is a note hit harder still than an [accent], written with a
+/// "^" over it instead of a ">".
+enum EventType { rest, normal, accent, marcato }
 
 extension EventTypeVelocity on EventType {
   /// MIDI velocity (0-127) representing this type's dynamic.
@@ -128,16 +177,68 @@ extension EventTypeVelocity on EventType {
         return 64;
       case EventType.accent:
         return 110;
+      case EventType.marcato:
+        return 127;
     }
   }
 }
 
-/// One rhythmic token: a note or rest of a given [value] (duration).
+/// Something added to a note, at most one at a time. A [flam] or [drag]
+/// (also called a ruff) is grace strokes played just before the note,
+/// leading into it -- one for a flam, two for a drag -- which take no time
+/// of their own in the measure. A [roll] is the note played as a run of
+/// strokes filling its length. Listed in the order they are saved by (see
+/// `MidiScoreCodec`), so new ones go at the end.
+enum Ornament { none, flam, drag, roll }
+
+extension OrnamentGraceNotes on Ornament {
+  /// How many grace strokes come before the main note.
+  int get graceNoteCount {
+    switch (this) {
+      case Ornament.none:
+      case Ornament.roll:
+        return 0;
+      case Ornament.flam:
+        return 1;
+      case Ornament.drag:
+        return 2;
+    }
+  }
+}
+
+/// A dynamic marking, softest first. Not a fixed loudness: what one means
+/// is only judged against the others in the same score, as played (see
+/// `DynamicsCheck`).
+enum DynamicMark { pp, p, mp, mf, f, ff }
+
+/// A crescendo (getting louder) or decrescendo (getting softer), written as
+/// a hairpin under the staff.
+enum Hairpin { crescendo, decrescendo }
+
+/// One rhythmic token: a note or rest of a given [value] (duration). A
+/// note may have an [ornament], and dynamics written at it: a
+/// [dynamicMark] that holds from this note on, and the start or end of a
+/// hairpin ([hairpinStart], [hairpinEnd] -- see [RhythmScore.hairpinSpans]).
+/// A rest has none of these.
 class RhythmEvent {
   final NoteValue value;
   final EventType type;
+  final Ornament ornament;
+  final DynamicMark? dynamicMark;
+  final Hairpin? hairpinStart;
+  final bool hairpinEnd;
 
-  const RhythmEvent(this.value, this.type);
+  const RhythmEvent(
+    this.value,
+    this.type, {
+    Ornament ornament = Ornament.none,
+    DynamicMark? dynamicMark,
+    Hairpin? hairpinStart,
+    bool hairpinEnd = false,
+  }) : ornament = type == EventType.rest ? Ornament.none : ornament,
+       dynamicMark = type == EventType.rest ? null : dynamicMark,
+       hairpinStart = type == EventType.rest ? null : hairpinStart,
+       hairpinEnd = type == EventType.rest ? false : hairpinEnd;
 
   int get durationUnits => value.units;
 
@@ -145,12 +246,41 @@ class RhythmEvent {
 
   int get velocity => type.velocity;
 
-  @override
-  bool operator ==(Object other) =>
-      other is RhythmEvent && other.value == value && other.type == type;
+  /// Whether any dynamic is written at this note.
+  bool get hasDynamics => dynamicMark != null || hairpinStart != null || hairpinEnd;
+
+  /// This event with the given parts changed -- keeping its dynamics,
+  /// which a new event would lose. The `clear...` flags remove one.
+  RhythmEvent copyWith({
+    NoteValue? value,
+    EventType? type,
+    Ornament? ornament,
+    DynamicMark? dynamicMark,
+    bool clearDynamicMark = false,
+    Hairpin? hairpinStart,
+    bool clearHairpinStart = false,
+    bool? hairpinEnd,
+  }) => RhythmEvent(
+    value ?? this.value,
+    type ?? this.type,
+    ornament: ornament ?? this.ornament,
+    dynamicMark: clearDynamicMark ? null : dynamicMark ?? this.dynamicMark,
+    hairpinStart: clearHairpinStart ? null : hairpinStart ?? this.hairpinStart,
+    hairpinEnd: hairpinEnd ?? this.hairpinEnd,
+  );
 
   @override
-  int get hashCode => Object.hash(value, type);
+  bool operator ==(Object other) =>
+      other is RhythmEvent &&
+      other.value == value &&
+      other.type == type &&
+      other.ornament == ornament &&
+      other.dynamicMark == dynamicMark &&
+      other.hairpinStart == hairpinStart &&
+      other.hairpinEnd == hairpinEnd;
+
+  @override
+  int get hashCode => Object.hash(value, type, ornament, dynamicMark, hairpinStart, hairpinEnd);
 }
 
 /// A measure built by appending [RhythmEvent]s left to right (append-only
@@ -237,6 +367,9 @@ class RhythmScore {
   /// from a future, independently adjustable practice-session tempo.
   final int tempoBpm;
 
+  /// The note [tempoBpm] counts.
+  final TempoBeat tempoBeat;
+
   /// Which drum sounds for every hit in this score.
   final Instrument instrument;
 
@@ -246,6 +379,7 @@ class RhythmScore {
   RhythmScore({
     required this.title,
     required this.tempoBpm,
+    this.tempoBeat = TempoBeat.quarter,
     this.instrument = Instrument.snare,
     required this.measures,
   }) : assert(measures.isNotEmpty);
@@ -253,6 +387,7 @@ class RhythmScore {
   factory RhythmScore.empty({
     String title = 'Untitled',
     int tempoBpm = 100,
+    TempoBeat tempoBeat = TempoBeat.quarter,
     TimeSignature meter = TimeSignature.common,
     Instrument instrument = Instrument.snare,
     int measuresCount = RhythmGrid.defaultMeasuresCount,
@@ -260,6 +395,7 @@ class RhythmScore {
     return RhythmScore(
       title: title,
       tempoBpm: tempoBpm,
+      tempoBeat: tempoBeat,
       instrument: instrument,
       measures: List.generate(measuresCount, (_) => Measure.empty(meter: meter)),
     );
@@ -268,12 +404,14 @@ class RhythmScore {
   RhythmScore copyWith({
     String? title,
     int? tempoBpm,
+    TempoBeat? tempoBeat,
     Instrument? instrument,
     List<Measure>? measures,
   }) {
     return RhythmScore(
       title: title ?? this.title,
       tempoBpm: tempoBpm ?? this.tempoBpm,
+      tempoBeat: tempoBeat ?? this.tempoBeat,
       instrument: instrument ?? this.instrument,
       measures: measures ?? this.measures,
     );
@@ -341,6 +479,111 @@ class RhythmScore {
     return starts;
   }
 
+  /// Which notes have grace strokes before them (a flam or drag), as indexes
+  /// into [noteStartUnits].
+  Set<int> get graceNoteIndexes {
+    final indexes = <int>{};
+    var noteIndex = 0;
+    for (final measure in measures) {
+      for (final event in measure.events) {
+        if (event.isRest) continue;
+        if (event.ornament.graceNoteCount > 0) indexes.add(noteIndex);
+        noteIndex++;
+      }
+    }
+    return indexes;
+  }
+
+  /// Every note (not rest) in playing order -- the order [noteStartUnits]
+  /// and the judge number them in.
+  List<RhythmEvent> get notes => [
+    for (final measure in measures)
+      for (final event in measure.events)
+        if (!event.isRest) event,
+  ];
+
+  /// Where each note is: (measure index, event index in that measure), by
+  /// note index.
+  List<(int, int)> get noteEventIndexes => [
+    for (var measure = 0; measure < measures.length; measure++)
+      for (var event = 0; event < measures[measure].events.length; event++)
+        if (!measures[measure].events[event].isRest) (measure, event),
+  ];
+
+  /// The dynamic marking each note is played at -- the latest one written
+  /// at or before it -- by note index. Null before the first marking.
+  List<DynamicMark?> get dynamicMarkAtNotes {
+    DynamicMark? current;
+    return [for (final note in notes) current = note.dynamicMark ?? current];
+  }
+
+  /// Every hairpin, as which notes it covers. One runs from the note it
+  /// starts at to the first note from there on marked as its end; with no
+  /// end marked, it runs up to the next note with a dynamic marking
+  /// (included -- it leads into it), or else to the last note. A new
+  /// hairpin starting first ends it at the note before.
+  List<HairpinSpan> get hairpinSpans {
+    final all = notes;
+    final spans = <HairpinSpan>[];
+    for (var start = 0; start < all.length; start++) {
+      final kind = all[start].hairpinStart;
+      if (kind == null) continue;
+      var end = all.length - 1;
+      for (var index = start; index < all.length; index++) {
+        if (all[index].hairpinEnd) {
+          end = index;
+          break;
+        }
+        if (index > start && all[index].hairpinStart != null) {
+          end = index - 1;
+          break;
+        }
+        if (index > start && all[index].dynamicMark != null) {
+          end = index;
+          break;
+        }
+      }
+      spans.add(HairpinSpan(kind, start, end));
+    }
+    return spans;
+  }
+
+  /// The parts of hairpins under measure [measureIndex], to draw: each from
+  /// where it starts in this measure (or the measure's start, if it began
+  /// earlier) to where it ends (or the measure's end, if it goes on), with
+  /// how far through the whole hairpin each end is.
+  List<HairpinSegment> hairpinSegmentsIn(int measureIndex) {
+    final starts = noteStartUnits;
+    final all = notes;
+    final measureStarts = measureStartUnits;
+    final measureStart = measureStarts[measureIndex];
+    final measureEnd = measureStarts[measureIndex + 1];
+    final segments = <HairpinSegment>[];
+    for (final span in hairpinSpans) {
+      final from = starts[span.firstNote].toDouble();
+      // To the middle of its last note -- under the note it leads into --
+      // or just short of it, when a marking is written there.
+      final last = all[span.lastNote];
+      final to = last.dynamicMark != null && span.lastNote > span.firstNote
+          ? starts[span.lastNote].toDouble()
+          : starts[span.lastNote] + last.durationUnits / 2;
+      if (to <= measureStart || from >= measureEnd) continue;
+      final length = to - from;
+      final segmentFrom = from < measureStart ? measureStart.toDouble() : from;
+      final segmentTo = to > measureEnd ? measureEnd.toDouble() : to;
+      segments.add(
+        HairpinSegment(
+          span.kind,
+          startUnits: segmentFrom - measureStart,
+          endUnits: segmentTo - measureStart,
+          startFraction: (segmentFrom - from) / length,
+          endFraction: (segmentTo - from) / length,
+        ),
+      );
+    }
+    return segments;
+  }
+
   /// The stretches where nothing should be played, as (start, end) in
   /// [RhythmGrid] units from the start of the score: every rest, and any
   /// unfilled space at the end of a measure (it plays as silence, and is
@@ -378,17 +621,64 @@ class RhythmScore {
 
   /// Appends one new empty measure to the end of the score, in the last
   /// measure's time signature.
-  RhythmScore appendMeasure() =>
-      copyWith(measures: [...measures, Measure.empty(meter: measures.last.meter)]);
+  RhythmScore appendMeasure() => copyWith(
+    measures: [
+      ...measures,
+      Measure.empty(meter: measures.last.meter),
+    ],
+  );
 
   @override
   bool operator ==(Object other) =>
       other is RhythmScore &&
       other.title == title &&
       other.tempoBpm == tempoBpm &&
+      other.tempoBeat == tempoBeat &&
       other.instrument == instrument &&
       listEquals(other.measures, measures);
 
   @override
-  int get hashCode => Object.hash(title, tempoBpm, instrument, Object.hashAll(measures));
+  int get hashCode => Object.hash(title, tempoBpm, tempoBeat, instrument, Object.hashAll(measures));
+}
+
+/// A hairpin, as the notes it covers (indexes into [RhythmScore.notes]).
+class HairpinSpan {
+  final Hairpin kind;
+  final int firstNote;
+  final int lastNote;
+
+  const HairpinSpan(this.kind, this.firstNote, this.lastNote);
+
+  @override
+  bool operator ==(Object other) =>
+      other is HairpinSpan &&
+      other.kind == kind &&
+      other.firstNote == firstNote &&
+      other.lastNote == lastNote;
+
+  @override
+  int get hashCode => Object.hash(kind, firstNote, lastNote);
+
+  @override
+  String toString() => 'HairpinSpan(${kind.name}, $firstNote-$lastNote)';
+}
+
+/// The part of a hairpin drawn under one measure: from [startUnits] to
+/// [endUnits] within it, and how far through the whole hairpin (0 to 1)
+/// each end is -- so a crescendo split over two measures opens up across
+/// both.
+class HairpinSegment {
+  final Hairpin kind;
+  final double startUnits;
+  final double endUnits;
+  final double startFraction;
+  final double endFraction;
+
+  const HairpinSegment(
+    this.kind, {
+    required this.startUnits,
+    required this.endUnits,
+    required this.startFraction,
+    required this.endFraction,
+  });
 }

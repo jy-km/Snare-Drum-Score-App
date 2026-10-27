@@ -10,6 +10,7 @@ import 'package:record/record.dart';
 
 import '../services/click_sound.dart';
 import '../services/onset_detector.dart';
+import '../widgets/app_theme.dart';
 
 /// Throwaway spike for Milestone 4: records the microphone, runs
 /// [OnsetDetector] over the recording, and shows what it found, so the
@@ -264,7 +265,7 @@ class _MicTestScreenState extends State<MicTestScreen> {
       ),
       const Text('Lower finds quieter hits; higher ignores more noise.'),
       const SizedBox(height: 16),
-      const Text('Recording (swipe sideways). Red lines are detected hits.'),
+      const Text('Recording (swipe sideways). Orange lines are detected hits.'),
       const SizedBox(height: 4),
       SizedBox(
         height: _WaveformPainter.height,
@@ -272,7 +273,11 @@ class _MicTestScreenState extends State<MicTestScreen> {
           scrollDirection: Axis.horizontal,
           child: CustomPaint(
             size: Size(recording.columnMax.length.toDouble(), _WaveformPainter.height),
-            painter: _WaveformPainter(recording: recording, onsets: onsets),
+            painter: _WaveformPainter(
+              recording: recording,
+              onsets: onsets,
+              palette: AppPalette.of(context),
+            ),
           ),
         ),
       ),
@@ -377,8 +382,9 @@ class _WaveformPainter extends CustomPainter {
 
   final _Recording recording;
   final List<Onset> onsets;
+  final AppPalette palette;
 
-  _WaveformPainter({required this.recording, required this.onsets});
+  _WaveformPainter({required this.recording, required this.onsets, required this.palette});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -387,11 +393,11 @@ class _WaveformPainter extends CustomPainter {
 
     canvas.drawRect(
       Rect.fromLTWH(0, 0, size.width, waveHeight),
-      Paint()..color = Colors.black.withValues(alpha: 0.04),
+      Paint()..color = palette.ink.withValues(alpha: 0.04),
     );
 
     final gridPaint = Paint()
-      ..color = Colors.black26
+      ..color = palette.rule
       ..strokeWidth = 1;
     for (var second = 0; second * pixelsPerSecond <= size.width; second++) {
       final x = second * pixelsPerSecond;
@@ -399,7 +405,7 @@ class _WaveformPainter extends CustomPainter {
       final label = TextPainter(
         text: TextSpan(
           text: '${second}s',
-          style: const TextStyle(fontSize: 11, color: Colors.black54),
+          style: TextStyle(fontSize: 11, color: palette.mutedInk),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -407,7 +413,7 @@ class _WaveformPainter extends CustomPainter {
     }
 
     final wavePaint = Paint()
-      ..color = Colors.black87
+      ..color = palette.ink
       ..strokeWidth = 1;
     for (var column = 0; column < recording.columnMax.length; column++) {
       final x = column + 0.5;
@@ -420,7 +426,7 @@ class _WaveformPainter extends CustomPainter {
     }
 
     final onsetPaint = Paint()
-      ..color = Colors.red
+      ..color = palette.accent
       ..strokeWidth = 1.5;
     for (final onset in onsets) {
       final x = onset.timeSeconds * pixelsPerSecond;
@@ -430,5 +436,7 @@ class _WaveformPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_WaveformPainter oldDelegate) =>
-      oldDelegate.recording != recording || oldDelegate.onsets != onsets;
+      oldDelegate.recording != recording ||
+      oldDelegate.onsets != onsets ||
+      oldDelegate.palette != palette;
 }

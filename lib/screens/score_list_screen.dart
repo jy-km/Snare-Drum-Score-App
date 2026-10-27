@@ -11,9 +11,7 @@ import '../services/track_sections.dart';
 import '../widgets/schedule_practice_dialog.dart';
 import '../widgets/schedule_scope.dart';
 import '../widgets/section_dialog.dart';
-import 'calibration_screen.dart';
 import 'history_screen.dart';
-import 'mic_test_screen.dart';
 import 'practice_screen.dart';
 import 'score_editor_screen.dart';
 import 'settings_screen.dart';
@@ -407,23 +405,6 @@ class _ScoreListScreenState extends State<ScoreListScreen> {
       appBar: AppBar(
         title: const Text('MyTrak'),
         actions: [
-          // Temporary entry point for the Milestone 4 hit-detection spike.
-          IconButton(
-            key: const Key('mic_test_button'),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const MicTestScreen()),
-            ),
-            icon: const Icon(Icons.mic_none),
-            tooltip: 'Mic test',
-          ),
-          IconButton(
-            key: const Key('calibration_button'),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const CalibrationScreen()),
-            ),
-            icon: const Icon(Icons.tune),
-            tooltip: 'Calibration',
-          ),
           IconButton(
             key: const Key('history_button'),
             onPressed: () => Navigator.of(context).push(
@@ -563,7 +544,8 @@ class _ScoreListScreenState extends State<ScoreListScreen> {
                           ),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: OutlinedButton.icon(
+                            // The main thing to do with a track.
+                            child: ElevatedButton.icon(
                               key: Key('practice_$name'),
                               onPressed: () => _openPractice(name),
                               icon: const Icon(Icons.play_arrow),

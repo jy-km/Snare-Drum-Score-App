@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 
+import '../models/rhythm_score.dart';
+import '../services/hit_judge.dart';
 import '../services/practice_history.dart';
 import '../services/score_storage.dart';
 import '../widgets/accuracy_chart.dart';
+import '../widgets/app_theme.dart';
 import '../widgets/judgement_style.dart';
 import '../widgets/note_dialog.dart';
-import '../services/hit_judge.dart';
 import 'review_screen.dart';
 
 /// Practice history: the same tracks as the main menu, in the same order
@@ -29,8 +31,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
     // The track's tempo is the target line on the tempo chart; the history
     // still opens without it if the track can't be read.
     int? target;
+    var targetBeat = TempoBeat.quarter;
     try {
-      target = (await _storage.load(score.fileName)).tempoBpm;
+      final track = await _storage.load(score.fileName);
+      target = track.tempoBpm;
+      targetBeat = track.tempoBeat;
     } catch (_) {}
     if (!mounted) return;
     await Navigator.of(context).push(
@@ -40,6 +45,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           title: score.title,
           historyStore: _history,
           targetTempoBpm: target,
+          tempoBeat: targetBeat,
         ),
       ),
     );
@@ -102,12 +108,17 @@ class TrackHistoryScreen extends StatefulWidget {
   /// The track's own tempo, drawn as the target on the tempo chart.
   final int? targetTempoBpm;
 
+  /// The note the track's BPM counts; the tempo chart counts every run in
+  /// it.
+  final TempoBeat tempoBeat;
+
   const TrackHistoryScreen({
     super.key,
     required this.scoreId,
     required this.title,
     required this.historyStore,
     this.targetTempoBpm,
+    this.tempoBeat = TempoBeat.quarter,
   });
 
   @override
@@ -131,7 +142,8 @@ class _TrackHistoryScreenState extends State<TrackHistoryScreen> {
         MaterialPageRoute(
           builder: (_) => ReviewScreen(
             review: review,
-            heading: '${_dateTime(run.startedAt)} · ${run.tempoBpm} BPM'
+            heading:
+                '${_dateTime(run.startedAt)} · ${run.tempoBeat.describe(run.tempoBpm)}'
                 '${run.section == null ? '' : ' · ${run.section!.label}'}',
             note: run.note,
           ),
@@ -202,7 +214,7 @@ class _TrackHistoryScreenState extends State<TrackHistoryScreen> {
             );
           }
           final days = DailyAccuracy.fromRuns(runs);
-          final tempoDays = DailyTempo.fromRuns(runs);
+          final tempoDays = DailyTempo.fromRuns(runs, beat: widget.tempoBeat);
           final target = widget.targetTempoBpm;
           return ListView(
             padding: const EdgeInsets.all(12),
@@ -237,7 +249,8 @@ class _TrackHistoryScreenState extends State<TrackHistoryScreen> {
                         target == null
                             ? 'The fastest tempo you played each day.'
                             : 'The fastest tempo you played each day; '
-                                'the dashed line is the track\'s tempo, $target BPM.',
+                                  'the dashed line is the track\'s tempo, '
+                                  '${widget.tempoBeat.describe(target)}.',
                         style: textTheme.bodySmall,
                       ),
                       const SizedBox(height: 8),
@@ -309,8 +322,7 @@ class _RunCard extends StatelessWidget {
               Row(
                 children: [
                   Expanded(child: Text(_dateTime(run.startedAt), style: textTheme.titleSmall)),
-                  if (accuracy != null)
-                    Text(accuracyText(accuracy), style: textTheme.titleMedium),
+                  if (accuracy != null) Text(accuracyText(accuracy), style: textTheme.titleMedium),
                   const SizedBox(width: 8),
                 ],
               ),
@@ -322,7 +334,7 @@ class _RunCard extends StatelessWidget {
                 ),
               const SizedBox(height: 2),
               Text(
-                '${run.tempoBpm} BPM · ${_duration(run.durationSeconds)}'
+                '${run.tempoBeat.describe(run.tempoBpm)} · ${_duration(run.durationSeconds)}'
                 '${run.timingEstimated ? ' · timing estimated' : ''}',
                 style: textTheme.bodySmall,
               ),
@@ -334,10 +346,16 @@ class _RunCard extends StatelessWidget {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.circle, size: 8, color: judgementColor(judgement)),
+                        Icon(
+                          Icons.circle,
+                          size: 8,
+                          color: judgementColor(judgement, AppPalette.of(context)),
+                        ),
                         const SizedBox(width: 3),
-                        Text('${judgementLabel(judgement)} ${run.counts[judgement] ?? 0}',
-                            style: textTheme.bodySmall),
+                        Text(
+                          '${judgementLabel(judgement)} ${run.counts[judgement] ?? 0}',
+                          style: textTheme.bodySmall,
+                        ),
                       ],
                     ),
                 ],
@@ -383,10 +401,7 @@ class _RunCard extends StatelessWidget {
                       const PopupMenuItem(
                         key: Key('run_menu_delete'),
                         value: _RunAction.delete,
-                        child: ListTile(
-                          leading: Icon(Icons.delete_outline),
-                          title: Text('Delete'),
-                        ),
+                        child: ListTile(leading: Icon(Icons.delete_outline), title: Text('Delete')),
                       ),
                     ],
                   ),

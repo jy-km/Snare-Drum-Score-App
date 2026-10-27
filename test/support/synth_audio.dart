@@ -5,8 +5,14 @@ const synthSampleRate = 44100;
 
 /// A stand-in for a microphone recording: [seconds] of faint background
 /// noise with a short percussive burst (a decaying crack of noise, roughly a
-/// stick on a pad) starting at each of [hitTimes].
-Int16List synthRecording({required double seconds, required List<double> hitTimes}) {
+/// stick on a pad) starting at each of [hitTimes] -- each [gains] times as
+/// loud as usual, if given (one per hit).
+Int16List synthRecording({
+  required double seconds,
+  required List<double> hitTimes,
+  List<double>? gains,
+}) {
+  assert(gains == null || gains.length == hitTimes.length);
   final random = math.Random(7);
   final mix = Float64List((seconds * synthSampleRate).round());
   for (var i = 0; i < mix.length; i++) {
@@ -14,12 +20,13 @@ Int16List synthRecording({required double seconds, required List<double> hitTime
   }
   const burstSeconds = 0.06;
   const decaySeconds = 0.01;
-  for (final hitTime in hitTimes) {
+  for (final (index, hitTime) in hitTimes.indexed) {
+    final gain = gains?[index] ?? 1;
     final start = (hitTime * synthSampleRate).round();
     final length = (burstSeconds * synthSampleRate).round();
     for (var i = 0; i < length && start + i < mix.length; i++) {
       final envelope = math.exp(-i / synthSampleRate / decaySeconds);
-      mix[start + i] += (random.nextDouble() * 2 - 1) * 12000 * envelope;
+      mix[start + i] += (random.nextDouble() * 2 - 1) * 12000 * gain * envelope;
     }
   }
   final samples = Int16List(mix.length);

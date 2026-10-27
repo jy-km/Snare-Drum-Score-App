@@ -18,15 +18,15 @@ import 'track_sections.dart';
 /// as one more note missed.
 double? runAccuracy(Map<Judgement, int> counts) {
   int count(Judgement judgement) => counts[judgement] ?? 0;
-  final judged = count(Judgement.perfect) +
+  final judged =
+      count(Judgement.perfect) +
       count(Judgement.great) +
       count(Judgement.good) +
       count(Judgement.miss) +
       count(Judgement.fail);
   if (judged == 0) return null;
-  final credit = count(Judgement.perfect) * 1.0 +
-      count(Judgement.great) * 0.75 +
-      count(Judgement.good) * 0.5;
+  final credit =
+      count(Judgement.perfect) * 1.0 + count(Judgement.great) * 0.75 + count(Judgement.good) * 0.5;
   return credit / judged;
 }
 
@@ -45,6 +45,10 @@ class PracticeRun {
 
   final DateTime startedAt;
   final int tempoBpm;
+
+  /// The note [tempoBpm] counted when the run was played.
+  final TempoBeat tempoBeat;
+
   final Map<Judgement, int> counts;
 
   /// How long the recording is.
@@ -64,6 +68,7 @@ class PracticeRun {
     required this.scoreId,
     required this.startedAt,
     required this.tempoBpm,
+    this.tempoBeat = TempoBeat.quarter,
     required this.counts,
     required this.durationSeconds,
     required this.note,
@@ -74,16 +79,17 @@ class PracticeRun {
   double? get accuracy => runAccuracy(counts);
 
   PracticeRun withNote(String note) => PracticeRun(
-        id: id,
-        scoreId: scoreId,
-        startedAt: startedAt,
-        tempoBpm: tempoBpm,
-        counts: counts,
-        durationSeconds: durationSeconds,
-        note: note,
-        timingEstimated: timingEstimated,
-        section: section,
-      );
+    id: id,
+    scoreId: scoreId,
+    startedAt: startedAt,
+    tempoBpm: tempoBpm,
+    tempoBeat: tempoBeat,
+    counts: counts,
+    durationSeconds: durationSeconds,
+    note: note,
+    timingEstimated: timingEstimated,
+    section: section,
+  );
 }
 
 /// Which section of its track a run was of.
@@ -98,24 +104,27 @@ class RunSection {
   const RunSection({required this.name, required this.firstMeasure, required this.lastMeasure});
 
   factory RunSection.of(TrackSection section) => RunSection(
-        name: section.name,
-        firstMeasure: section.firstMeasure,
-        lastMeasure: section.lastMeasure,
-      );
+    name: section.name,
+    firstMeasure: section.firstMeasure,
+    lastMeasure: section.lastMeasure,
+  );
 
   /// "Fill (m. 5–8)".
   String get label => firstMeasure == lastMeasure
       ? '$name (m. ${firstMeasure + 1})'
       : '$name (m. ${firstMeasure + 1}–${lastMeasure + 1})';
 
-  Map<String, Object?> toJson() =>
-      {'name': name, 'firstMeasure': firstMeasure, 'lastMeasure': lastMeasure};
+  Map<String, Object?> toJson() => {
+    'name': name,
+    'firstMeasure': firstMeasure,
+    'lastMeasure': lastMeasure,
+  };
 
   static RunSection fromJson(Map<String, dynamic> json) => RunSection(
-        name: json['name'] as String,
-        firstMeasure: json['firstMeasure'] as int,
-        lastMeasure: json['lastMeasure'] as int,
-      );
+    name: json['name'] as String,
+    firstMeasure: json['firstMeasure'] as int,
+    lastMeasure: json['lastMeasure'] as int,
+  );
 }
 
 /// Keeps every judged practice run -- its recording, its judgements and
@@ -155,7 +164,7 @@ class FilePracticeHistoryStore implements PracticeHistoryStore {
   /// [root] is where the `history` folder goes; by default the app's
   /// documents directory. Replaceable for tests.
   FilePracticeHistoryStore({Future<Directory> Function()? root})
-      : _root = root ?? getApplicationDocumentsDirectory;
+    : _root = root ?? getApplicationDocumentsDirectory;
 
   Future<Directory> _trackDir(String scoreId) async {
     final root = await _root();
@@ -177,14 +186,16 @@ class FilePracticeHistoryStore implements PracticeHistoryStore {
       scoreId: scoreId,
       startedAt: startedAt,
       tempoBpm: tempoBpm,
+      tempoBeat: review.layout.score.tempoBeat,
       counts: review.counts,
       durationSeconds: review.audioSeconds,
       note: '',
       timingEstimated: review.timingEstimated,
       section: section,
     );
-    await File('${dir.path}/${run.id}.pcm')
-        .writeAsBytes(review.audio.buffer.asUint8List(review.audio.offsetInBytes, review.audio.lengthInBytes));
+    await File('${dir.path}/${run.id}.pcm').writeAsBytes(
+      review.audio.buffer.asUint8List(review.audio.offsetInBytes, review.audio.lengthInBytes),
+    );
     await _writeJson(dir, run, review);
     return run;
   }
@@ -246,48 +257,51 @@ class FilePracticeHistoryStore implements PracticeHistoryStore {
 // exercise the same encoding.
 
 Map<String, Object?> encodeRun(PracticeRun run, RunReview review) => {
-      'id': run.id,
-      'scoreId': run.scoreId,
-      'startedAt': run.startedAt.millisecondsSinceEpoch,
-      'tempoBpm': run.tempoBpm,
-      'counts': {for (final entry in run.counts.entries) entry.key.name: entry.value},
-      'durationSeconds': run.durationSeconds,
-      'note': run.note,
-      'timingEstimated': run.timingEstimated,
-      if (run.section != null) 'section': run.section!.toJson(),
-      // The score as it was when played, so the review still lines up after
-      // the score is edited.
-      'score': base64Encode(MidiScoreCodec.encode(review.layout.score)),
-      'secondsPerUnit': review.secondsPerUnit,
-      'noteTimes': review.noteTimes,
-      'sampleRate': review.sampleRate,
-      'judgements': [
-        for (final hit in review.judgements)
-          {
-            'judgement': hit.judgement.name,
-            'noteIndex': hit.noteIndex,
-            'offsetSeconds': hit.offsetSeconds,
-            'hitTimeSeconds': hit.hitTimeSeconds,
-          },
-      ],
-    };
+  'id': run.id,
+  'scoreId': run.scoreId,
+  'startedAt': run.startedAt.millisecondsSinceEpoch,
+  'tempoBpm': run.tempoBpm,
+  'tempoBeat': run.tempoBeat.name,
+  'counts': {for (final entry in run.counts.entries) entry.key.name: entry.value},
+  'durationSeconds': run.durationSeconds,
+  'note': run.note,
+  'timingEstimated': run.timingEstimated,
+  if (run.section != null) 'section': run.section!.toJson(),
+  // The score as it was when played, so the review still lines up after
+  // the score is edited.
+  'score': base64Encode(MidiScoreCodec.encode(review.layout.score)),
+  'secondsPerUnit': review.secondsPerUnit,
+  'noteTimes': review.noteTimes,
+  'sampleRate': review.sampleRate,
+  'judgements': [
+    for (final hit in review.judgements)
+      {
+        'judgement': hit.judgement.name,
+        'noteIndex': hit.noteIndex,
+        'offsetSeconds': hit.offsetSeconds,
+        'hitTimeSeconds': hit.hitTimeSeconds,
+      },
+  ],
+};
 
 PracticeRun decodeRunSummary(Map<String, dynamic> json) => PracticeRun(
-      id: json['id'] as String,
-      scoreId: json['scoreId'] as String,
-      startedAt: DateTime.fromMillisecondsSinceEpoch(json['startedAt'] as int),
-      tempoBpm: json['tempoBpm'] as int,
-      counts: {
-        for (final entry in (json['counts'] as Map<String, dynamic>).entries)
-          Judgement.values.byName(entry.key): entry.value as int,
-      },
-      durationSeconds: (json['durationSeconds'] as num).toDouble(),
-      note: json['note'] as String? ?? '',
-      timingEstimated: json['timingEstimated'] as bool? ?? false,
-      section: json['section'] == null
-          ? null
-          : RunSection.fromJson(json['section'] as Map<String, dynamic>),
-    );
+  id: json['id'] as String,
+  scoreId: json['scoreId'] as String,
+  startedAt: DateTime.fromMillisecondsSinceEpoch(json['startedAt'] as int),
+  tempoBpm: json['tempoBpm'] as int,
+  // Runs saved before the beat could be chosen counted quarter notes.
+  tempoBeat: TempoBeat.values.asNameMap()[json['tempoBeat']] ?? TempoBeat.quarter,
+  counts: {
+    for (final entry in (json['counts'] as Map<String, dynamic>).entries)
+      Judgement.values.byName(entry.key): entry.value as int,
+  },
+  durationSeconds: (json['durationSeconds'] as num).toDouble(),
+  note: json['note'] as String? ?? '',
+  timingEstimated: json['timingEstimated'] as bool? ?? false,
+  section: json['section'] == null
+      ? null
+      : RunSection.fromJson(json['section'] as Map<String, dynamic>),
+);
 
 RunReview decodeReview(Map<String, dynamic> json, Int16List audio) {
   final RhythmScore score = MidiScoreCodec.decode(base64Decode(json['score'] as String));

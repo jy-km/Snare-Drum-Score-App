@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:snare_drum_score_app/models/rhythm_score.dart';
 import 'package:snare_drum_score_app/services/hit_judge.dart';
 import 'package:snare_drum_score_app/services/practice_history.dart';
 import 'package:snare_drum_score_app/widgets/accuracy_chart.dart';
@@ -16,14 +17,13 @@ void main() {
       int good = 0,
       int miss = 0,
       int fail = 0,
-    }) =>
-        {
-          Judgement.perfect: perfect,
-          Judgement.great: great,
-          Judgement.good: good,
-          Judgement.miss: miss,
-          Judgement.fail: fail,
-        };
+    }) => {
+      Judgement.perfect: perfect,
+      Judgement.great: great,
+      Judgement.good: good,
+      Judgement.miss: miss,
+      Judgement.fail: fail,
+    };
 
     test('Perfect 100%, Great 75%, Good 50%, Miss 0%, averaged over the notes', () {
       expect(runAccuracy(counts(perfect: 4)), 1.0);
@@ -55,6 +55,35 @@ void main() {
     });
     tearDown(() => root.delete(recursive: true));
 
+    test('A run keeps the note its BPM counted', () async {
+      await store.save(
+        scoreId: 'Groove_1',
+        review: sampleReview(tempoBeat: TempoBeat.half),
+        tempoBpm: 150,
+        startedAt: DateTime(2026, 10, 16),
+      );
+      final listed = (await store.runsFor('Groove_1')).single;
+      expect((listed.tempoBpm, listed.tempoBeat), (150, TempoBeat.half));
+      expect((await store.loadReview(listed)).layout.score.tempoBeat, TempoBeat.half);
+    });
+
+    test('A run saved before the beat could be chosen counted quarter notes', () {
+      final json = encodeRun(
+        PracticeRun(
+          id: '1',
+          scoreId: 'Groove_1',
+          startedAt: DateTime(2026, 10, 1),
+          tempoBpm: 90,
+          counts: const {},
+          durationSeconds: 1,
+          note: '',
+          timingEstimated: false,
+        ),
+        sampleReview(),
+      )..remove('tempoBeat');
+      expect(decodeRunSummary(json).tempoBeat, TempoBeat.quarter);
+    });
+
     test('A saved run lists with its details and reloads exactly', () async {
       final review = sampleReview();
       final startedAt = DateTime(2026, 10, 7, 14, 5);
@@ -74,6 +103,7 @@ void main() {
       expect(listed.accuracy, closeTo(0.5625, 1e-9));
       expect(listed.durationSeconds, closeTo(9, 1e-9));
       expect(listed.note, '');
+      expect(listed.tempoBeat, TempoBeat.quarter);
 
       final reloaded = await store.loadReview(listed);
       expect(reloaded.layout.score, review.layout.score);
@@ -134,15 +164,15 @@ void main() {
 
   test('Daily accuracy averages each day\'s runs, oldest day first', () {
     PracticeRun run(DateTime when, int perfect, int miss) => PracticeRun(
-          id: '${when.millisecondsSinceEpoch}',
-          scoreId: 'Groove_1',
-          startedAt: when,
-          tempoBpm: 60,
-          counts: {Judgement.perfect: perfect, Judgement.miss: miss},
-          durationSeconds: 10,
-          note: '',
-          timingEstimated: false,
-        );
+      id: '${when.millisecondsSinceEpoch}',
+      scoreId: 'Groove_1',
+      startedAt: when,
+      tempoBpm: 60,
+      counts: {Judgement.perfect: perfect, Judgement.miss: miss},
+      durationSeconds: 10,
+      note: '',
+      timingEstimated: false,
+    );
 
     final days = DailyAccuracy.fromRuns([
       run(DateTime(2026, 10, 7, 18), 3, 1), // 75%
@@ -158,15 +188,15 @@ void main() {
 
   test('Daily tempo keeps each day\'s fastest and slowest tempo, every run counted', () {
     PracticeRun run(DateTime when, int bpm, {int perfect = 1}) => PracticeRun(
-          id: '${when.millisecondsSinceEpoch}',
-          scoreId: 'Groove_1',
-          startedAt: when,
-          tempoBpm: bpm,
-          counts: {Judgement.perfect: perfect},
-          durationSeconds: 10,
-          note: '',
-          timingEstimated: false,
-        );
+      id: '${when.millisecondsSinceEpoch}',
+      scoreId: 'Groove_1',
+      startedAt: when,
+      tempoBpm: bpm,
+      counts: {Judgement.perfect: perfect},
+      durationSeconds: 10,
+      note: '',
+      timingEstimated: false,
+    );
 
     final days = DailyTempo.fromRuns([
       run(DateTime(2026, 10, 7, 18), 92),
@@ -179,5 +209,28 @@ void main() {
     expect(days.map((day) => day.topBpm), [80, 97]);
     expect(days.map((day) => day.slowestBpm), [80, 85]);
     expect(days.map((day) => day.runCount), [1, 3]);
+  });
+
+  test('Tempo by day counts every run in the beat asked for', () {
+    PracticeRun run(DateTime when, int bpm, TempoBeat beat) => PracticeRun(
+      id: '${when.millisecondsSinceEpoch}',
+      scoreId: 'Groove_1',
+      startedAt: when,
+      tempoBpm: bpm,
+      tempoBeat: beat,
+      counts: const {Judgement.perfect: 1},
+      durationSeconds: 10,
+      note: '',
+      timingEstimated: false,
+    );
+
+    final runs = [
+      run(DateTime(2026, 10, 7, 8), 160, TempoBeat.quarter),
+      run(DateTime(2026, 10, 7, 9), 75, TempoBeat.half), // 150 quarter notes
+    ];
+    final inHalves = DailyTempo.fromRuns(runs, beat: TempoBeat.half).single;
+    expect((inHalves.topBpm, inHalves.slowestBpm), (80, 75));
+    final inQuarters = DailyTempo.fromRuns(runs).single;
+    expect((inQuarters.topBpm, inQuarters.slowestBpm), (160, 150));
   });
 }

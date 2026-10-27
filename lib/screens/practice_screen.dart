@@ -7,19 +7,28 @@ import 'package:flutter/material.dart';
 
 import '../models/rhythm_score.dart';
 import '../services/click_sound.dart';
+import '../services/dynamics_check.dart';
 import '../services/hit_judge.dart';
 import '../services/live_judge.dart';
 import '../services/mic_input.dart';
 import '../services/mic_latency.dart';
 import '../services/practice_history.dart';
 import '../services/practice_slot_assignment.dart';
-import '../services/track_sections.dart';
 import '../services/run_review.dart';
+import '../services/screen_awake.dart';
 import '../services/timeline_layout.dart';
+import '../services/track_sections.dart';
+import '../widgets/app_theme.dart';
+import '../widgets/confetti.dart';
+import '../widgets/dynamics_results.dart';
 import '../widgets/judgement_style.dart';
+import '../widgets/mic_light.dart';
 import '../widgets/note_dialog.dart';
 import '../widgets/settings_scope.dart';
 import '../widgets/staff_notation_view.dart';
+import '../widgets/tap_tempo_button.dart';
+import '../widgets/tempo_mark.dart';
+import '../widgets/timing_needle.dart';
 import 'review_screen.dart';
 
 enum _PracticePhase { idle, running, done }
@@ -67,6 +76,9 @@ class PracticeScreen extends StatefulWidget {
   /// to the track's history marked with the section.
   final TrackSection? section;
 
+  /// Keeps the screen on while the practice screen is open.
+  final ScreenAwake screenAwake;
+
   const PracticeScreen({
     super.key,
     required this.score,
@@ -76,17 +88,20 @@ class PracticeScreen extends StatefulWidget {
     this.scoreId,
     this.historyStore,
     this.section,
+    this.screenAwake = const DeviceScreenAwake(),
   });
 
   @override
   State<PracticeScreen> createState() => _PracticeScreenState();
 }
 
-class _PracticeScreenState extends State<PracticeScreen>
-    with SingleTickerProviderStateMixin {
+class _PracticeScreenState extends State<PracticeScreen> with SingleTickerProviderStateMixin {
   static const _minTempoBpm = 20;
   static const _maxTempoBpm = 300;
   static const _tempoStepBpm = 5;
+
+  /// A run at least this accurate ([runAccuracy]) suggests going faster.
+  static const _readyForFasterAccuracy = 0.85;
 
   /// How the count-in and the score's measures sit on one timeline -- the
   /// same layout the review screen replays a run on.
@@ -152,6 +167,10 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// own identity, so two "Perfect"s in a row still animate as two.
   int _judgementCount = 0;
 
+  /// How many hits the microphone has heard this run, judged or not -- for
+  /// the light that flashes on each one.
+  int _heardCount = 0;
+
   /// The run's tally, once it is over and every note has been settled.
   Map<Judgement, int>? _finalCounts;
 
@@ -171,6 +190,26 @@ class _PracticeScreenState extends State<PracticeScreen>
   /// The finished run, ready to go over on the review screen -- set only
   /// for a run that was judged.
   RunReview? _review;
+
+  /// How the finished run's dynamics went -- worked out once per run.
+  DynamicsCheck? get _dynamics {
+    final review = _review;
+    if (review == null) return null;
+    if (!identical(_dynamicsOf, review)) {
+      _dynamicsOf = review;
+      _dynamicsCache = DynamicsCheck.of(review);
+    }
+    return _dynamicsCache;
+  }
+
+  RunReview? _dynamicsOf;
+  DynamicsCheck? _dynamicsCache;
+
+  /// The hairpins under each of the score's measures (not the count-in).
+  late final List<List<HairpinSegment>> _hairpins = [
+    for (var measure = 0; measure < widget.score.measures.length; measure++)
+      widget.score.hairpinSegmentsIn(measure),
+  ];
 
   late final PracticeHistoryStore _history = widget.historyStore ?? FilePracticeHistoryStore();
 
@@ -211,6 +250,10 @@ class _PracticeScreenState extends State<PracticeScreen>
       ..addListener(_onPlaybackTick)
       ..addStatusListener(_onPlaybackStatus);
     unawaited(_loadLatencyHistory());
+    // For the whole time the screen is open, not just during a run: between
+    // runs the player is reading the result and setting the next tempo,
+    // sticks in hand.
+    unawaited(widget.screenAwake.keep(true));
   }
 
   Future<void> _loadLatencyHistory() async {
@@ -237,6 +280,7 @@ class _PracticeScreenState extends State<PracticeScreen>
     _stopListening();
     _playbackController.dispose();
     _clickPlayer.dispose();
+    unawaited(widget.screenAwake.keep(false));
     super.dispose();
   }
 
@@ -271,9 +315,11 @@ class _PracticeScreenState extends State<PracticeScreen>
           for (final (start, end) in widget.score.restSpanUnits)
             (countInSeconds + start * secondsPerUnit, countInSeconds + end * secondsPerUnit),
         ],
+        graceNotes: widget.score.graceNoteIndexes,
         judgingStartsAt: countInSeconds,
       );
       _recordingClock = RecordingClock();
+      _heardCount = 0;
       _recording.clear();
       _runJudgements.clear();
       _noteColorsJudgementCount = -1; // a new run: recolour from scratch
@@ -308,8 +354,11 @@ class _PracticeScreenState extends State<PracticeScreen>
 
     final stateBefore = judge.state;
     final judged = judge.addSamples(samples);
-    if (judged.isEmpty && judge.state == stateBefore) return;
-    setState(() => _showJudged(judged));
+    if (judged.isEmpty && judge.state == stateBefore && judge.hitsHeard == _heardCount) return;
+    setState(() {
+      _heardCount = judge.hitsHeard;
+      _showJudged(judged);
+    });
   }
 
   /// Where in the recording the timeline starts, going only by the app's
@@ -335,6 +384,7 @@ class _PracticeScreenState extends State<PracticeScreen>
         layout: _layout,
         noteTimes: _noteTimes,
         secondsPerUnit: _msPerUnit / 1000,
+        palette: AppPalette.of(context),
       );
       // A new list each time: the staff only redraws for a different list.
       _hitMarks[measureIndex] = [...?_hitMarks[measureIndex], mark];
@@ -383,9 +433,11 @@ class _PracticeScreenState extends State<PracticeScreen>
     if (heardStart != null && clockStart != null) {
       measuredDelay = heardStart - clockStart;
       _latencyHistory = _latencyHistory.adding(measuredDelay);
-      unawaited(widget.latencyStore.save(_latencyHistory).catchError((Object e) {
-        debugPrint('Could not save the sound delay: $e');
-      }));
+      unawaited(
+        widget.latencyStore.save(_latencyHistory).catchError((Object e) {
+          debugPrint('Could not save the sound delay: $e');
+        }),
+      );
     }
 
     _stopListening();
@@ -413,9 +465,9 @@ class _PracticeScreenState extends State<PracticeScreen>
         )
         .then<PracticeRun?>((run) => run)
         .catchError((Object e) {
-      debugPrint('Could not save the run to the practice history: $e');
-      return null;
-    });
+          debugPrint('Could not save the run to the practice history: $e');
+          return null;
+        });
   }
 
   /// Asks for a note about the finished run and saves it with the run.
@@ -428,9 +480,8 @@ class _PracticeScreenState extends State<PracticeScreen>
     try {
       await _history.updateNote(run, note);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(note.isEmpty ? 'Note removed' : 'Note saved')),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(note.isEmpty ? 'Note removed' : 'Note saved')));
     } catch (e) {
       debugPrint('Could not save the note: $e');
     }
@@ -447,12 +498,14 @@ class _PracticeScreenState extends State<PracticeScreen>
   }
 
   void _releaseMic(MicInput mic) {
-    unawaited(mic.stop().catchError((Object e) {
-      debugPrint('Practice microphone failed to stop: $e');
-    }));
+    unawaited(
+      mic.stop().catchError((Object e) {
+        debugPrint('Practice microphone failed to stop: $e');
+      }),
+    );
   }
 
-  double get _msPerUnit => 60000 / _practiceTempoBpm / RhythmGrid.unitsPerQuarterNote;
+  double get _msPerUnit => widget.score.tempoBeat.msPerUnit(_practiceTempoBpm);
 
   String _labelFor(int timelineIndex) => _layout.labelFor(timelineIndex);
 
@@ -494,10 +547,18 @@ class _PracticeScreenState extends State<PracticeScreen>
     // Fractional, rounded per hit -- see `RhythmPlayer._renderSequence`.
     final samplesPerUnit = ClickSound.sampleRate * _msPerUnit / 1000;
     final countInClick = await ClickSound.normalSamples(widget.score.instrument);
-    final rhythmNormal =
-        _rhythmSoundEnabled ? await ClickSound.normalSamples(widget.score.instrument) : null;
-    final rhythmAccent =
-        _rhythmSoundEnabled ? await ClickSound.accentSamples(widget.score.instrument) : null;
+    final rhythmNormal = _rhythmSoundEnabled
+        ? await ClickSound.normalSamples(widget.score.instrument)
+        : null;
+    final rhythmAccent = _rhythmSoundEnabled
+        ? await ClickSound.accentSamples(widget.score.instrument)
+        : null;
+    final rhythmMarcato = _rhythmSoundEnabled
+        ? await ClickSound.marcatoSamples(widget.score.instrument)
+        : null;
+    final rhythmGrace = _rhythmSoundEnabled
+        ? await ClickSound.graceSamples(widget.score.instrument)
+        : null;
 
     final tailLength = [
       countInClick.length,
@@ -506,11 +567,20 @@ class _PracticeScreenState extends State<PracticeScreen>
     ].reduce((a, b) => a > b ? a : b);
     final mixBuffer = Int32List((_totalUnits * samplesPerUnit).ceil() + tailLength);
 
-    void mixAt(int unitPosition, Int16List samples) {
-      final startSample = (unitPosition * samplesPerUnit).round();
-      for (var i = 0; i < samples.length; i++) {
-        mixBuffer[startSample + i] += samples[i];
-      }
+    // [leadSamples] earlier than the position: a grace stroke before its
+    // note. [gain]: turned up or down for the note's dynamics, never past
+    // what the sound has room for.
+    final headroom = <Int16List, double>{};
+    void mixAt(int unitPosition, Int16List samples, {int leadSamples = 0, double gain = 1}) {
+      ClickSound.mixInto(
+        mixBuffer,
+        (unitPosition * samplesPerUnit).round() - leadSamples,
+        samples,
+        gain: gain,
+        headroom: gain > 1
+            ? headroom.putIfAbsent(samples, () => ClickSound.headroom(samples))
+            : double.infinity,
+      );
     }
 
     for (var beat = 0; beat < _countInBeats; beat++) {
@@ -518,12 +588,31 @@ class _PracticeScreenState extends State<PracticeScreen>
     }
 
     if (_rhythmSoundEnabled) {
+      final gains = ClickSound.dynamicGains(widget.score);
+      var noteIndex = 0;
       for (var measureIndex = 0; measureIndex < widget.score.measures.length; measureIndex++) {
         final measure = widget.score.measures[measureIndex];
         var unitCursor = _timelineStarts[measureIndex + 1];
         for (final event in measure.events) {
           if (!event.isRest) {
-            mixAt(unitCursor, event.type == EventType.accent ? rhythmAccent! : rhythmNormal!);
+            final gain = gains[noteIndex++];
+            mixAt(
+              unitCursor,
+              ClickSound.samplesForType(
+                event.type,
+                normal: rhythmNormal!,
+                accent: rhythmAccent!,
+                marcato: rhythmMarcato!,
+              ),
+              gain: gain,
+            );
+            for (final units in ClickSound.rollStrokeUnits(event)) {
+              mixAt(unitCursor + units, rhythmNormal, gain: gain);
+            }
+            // Always room for these: the count-in comes before every note.
+            for (final lead in ClickSound.graceLeadSamples(event.ornament, _msPerUnit)) {
+              mixAt(unitCursor, rhythmGrace!, leadSamples: lead, gain: gain);
+            }
           }
           unitCursor += event.durationUnits;
         }
@@ -613,9 +702,11 @@ class _PracticeScreenState extends State<PracticeScreen>
 
     _playbackController.duration = Duration(milliseconds: (_totalUnits * _msPerUnit).round());
     final elapsedSinceAnchor = clock.now().difference(anchor);
-    final startFraction = (elapsedSinceAnchor.inMicroseconds /
-            _playbackController.duration!.inMicroseconds)
-        .clamp(0.0, 1.0);
+    final startFraction =
+        (elapsedSinceAnchor.inMicroseconds / _playbackController.duration!.inMicroseconds).clamp(
+          0.0,
+          1.0,
+        );
     _playbackController.forward(from: startFraction);
   }
 
@@ -623,9 +714,11 @@ class _PracticeScreenState extends State<PracticeScreen>
     // Stop means stop: the run's audio (the count-in, and the whole rhythm
     // when "Play rhythm sound" is on) would otherwise play on to its end.
     _runGeneration++;
-    unawaited(_clickPlayer.stop().catchError((Object e) {
-      debugPrint('Practice audio failed to stop: $e');
-    }));
+    unawaited(
+      _clickPlayer.stop().catchError((Object e) {
+        debugPrint('Practice audio failed to stop: $e');
+      }),
+    );
     _countInPositionSubscription?.cancel();
     _countInPositionSubscription = null;
     _countInFallbackTimer?.cancel();
@@ -650,6 +743,13 @@ class _PracticeScreenState extends State<PracticeScreen>
       _runJudgements.clear();
       _noteColorsJudgementCount = -1; // a new run: recolour from scratch
     });
+  }
+
+  /// Straight into another run, [_tempoStepBpm] faster.
+  void _practiceAgainFaster() {
+    _returnToIdle();
+    _adjustTempo(_tempoStepBpm);
+    unawaited(_onStartPressed());
   }
 
   void _adjustTempo(int delta) {
@@ -705,128 +805,207 @@ class _PracticeScreenState extends State<PracticeScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('Practice: ${widget.score.title}')),
-      body: SafeArea(
-        child: LayoutBuilder(builder: (context, constraints) {
-          // Once a run starts, everything the player needs while playing --
-          // the judgement and all three measures -- has to be on screen at
-          // once: they can't stop to scroll. So the settings (which are
-          // locked during a run anyway) are hidden, and the staffs shrink to
-          // fit if they must. Scrolling stays as a last resort for a screen
-          // too short even for that.
-          final playing = _phase != _PracticePhase.idle;
-          final staffHeight =
-              playing ? _staffHeightToFit(constraints.maxHeight) : StaffNotationView.defaultHeight;
-          final noteColors = SettingsScope.of(context).colorNotesByJudgement
-              ? _noteColors()
-              : const <int, Map<int, Color>>{};
-          return SingleChildScrollView(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: playing ? 8 : 16),
-            child: Column(
-              children: [
-                _JudgementBanner(
-                  lastJudgement: _lastJudgement,
-                  judgementCount: _judgementCount,
-                  finalCounts: _finalCounts,
-                  notice: _judgingNotice,
-                  detail: _alignmentDetail,
-                ),
-                Text(
-                  _statusText,
-                  key: const Key('practice_status_text'),
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                if (!playing) ...[
-                  const SizedBox(height: 12),
-                  _TempoStepper(
-                    bpm: _practiceTempoBpm,
-                    enabled: true,
-                    onDecrease: () => _adjustTempo(-_tempoStepBpm),
-                    onIncrease: () => _adjustTempo(_tempoStepBpm),
-                  ),
-                  const SizedBox(height: 8),
-                  SwitchListTile(
-                    key: const Key('practice_rhythm_sound_toggle'),
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Play rhythm sound'),
-                    subtitle: const Text('Your playing is not judged while this is on'),
-                    value: _rhythmSoundEnabled,
-                    onChanged: (value) => setState(() => _rhythmSoundEnabled = value),
-                  ),
-                  const SizedBox(height: 12),
-                ] else
-                  const SizedBox(height: _gapAboveSlots),
-                // Stacked full-width, one measure per row (like systems in
-                // sheet music) rather than side-by-side: splitting the screen
-                // width 3 ways left too little room between notes to read.
-                Column(
-                  children: PracticeSlot.values.map((slot) {
-                    final timelineIndex = _slots.content[slot];
-                    final isActive =
-                        timelineIndex != null && timelineIndex == _slots.currentMeasureIndex;
-                    final playheadUnits =
-                        isActive ? _globalUnits - _timelineStarts[timelineIndex] : null;
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: _gapBetweenSlots),
-                      child: _PracticeSlotView(
-                        key: Key('practice_slot_${slot.name}'),
-                        label: timelineIndex == null ? '' : _labelFor(timelineIndex),
-                        measureIndex: timelineIndex,
-                        measure: timelineIndex != null ? _measureFor(timelineIndex) : null,
-                        showTimeSignature:
-                            timelineIndex != null && _showsTimeSignature(timelineIndex),
-                        isActive: isActive,
-                        playheadUnits: playheadUnits,
-                        marks: _hitMarks[timelineIndex] ?? const [],
-                        eventColors: noteColors[timelineIndex] ?? const {},
-                        staffHeight: staffHeight,
+      body: _withConfetti(
+        context,
+        SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Once a run starts, everything the player needs while playing --
+              // the judgement and all three measures -- has to be on screen at
+              // once: they can't stop to scroll. So the settings (which are
+              // locked during a run anyway) are hidden, and the staffs shrink to
+              // fit if they must. Before a run, the same goes for the settings
+              // and the Start button: the judgement strip (empty until a run)
+              // is left out and the staffs shrink instead. Scrolling stays as a
+              // last resort for a screen too short even for that.
+              final playing = _phase != _PracticePhase.idle;
+              final staffHeight = _staffHeightToFit(constraints.maxHeight, playing: playing);
+              final noteColors = SettingsScope.of(context).colorNotesByJudgement
+                  ? _noteColors()
+                  : const <int, Map<int, Color>>{};
+              return SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: _verticalPadding),
+                child: Column(
+                  children: [
+                    if (playing)
+                      _JudgementBanner(
+                        lastJudgement: _lastJudgement,
+                        judgementCount: _judgementCount,
+                        finalCounts: _finalCounts,
+                        notice: _judgingNotice,
+                        detail: _alignmentDetail,
                       ),
-                    );
-                  }).toList(),
+                    if (playing)
+                      TimingNeedle(key: const Key('practice_timing_needle'), hits: _recentHits()),
+                    // The light balanced by a gap of its width on the other
+                    // side, so the status stays centred.
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const SizedBox(width: MicLight.width),
+                        Text(
+                          _statusText,
+                          key: const Key('practice_status_text'),
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        MicLight(
+                          key: const Key('practice_mic_light'),
+                          heardCount: _heardCount,
+                          listening: _mic != null,
+                        ),
+                      ],
+                    ),
+                    if (!playing) ...[
+                      _TempoStepper(
+                        beat: widget.score.tempoBeat,
+                        bpm: _practiceTempoBpm,
+                        enabled: true,
+                        onDecrease: () => _adjustTempo(-_tempoStepBpm),
+                        onIncrease: () => _adjustTempo(_tempoStepBpm),
+                        onTapTempo: (bpm) => setState(() => _practiceTempoBpm = bpm),
+                      ),
+                      SwitchListTile(
+                        key: const Key('practice_rhythm_sound_toggle'),
+                        dense: true,
+                        visualDensity: VisualDensity.compact,
+                        minTileHeight: 48,
+                        minVerticalPadding: 0,
+                        contentPadding: EdgeInsets.zero,
+                        // One line rather than a subtitle, so Start fits on
+                        // a small phone without scrolling.
+                        title: const Text('Play rhythm sound (not judged)'),
+                        value: _rhythmSoundEnabled,
+                        onChanged: (value) => setState(() => _rhythmSoundEnabled = value),
+                      ),
+                    ],
+                    const SizedBox(height: _gapAboveSlots),
+                    // Stacked full-width, one measure per row (like systems in
+                    // sheet music) rather than side-by-side: splitting the screen
+                    // width 3 ways left too little room between notes to read.
+                    Column(
+                      children: PracticeSlot.values.map((slot) {
+                        final timelineIndex = _slots.content[slot];
+                        final isActive =
+                            timelineIndex != null && timelineIndex == _slots.currentMeasureIndex;
+                        final playheadUnits = isActive
+                            ? _globalUnits - _timelineStarts[timelineIndex]
+                            : null;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: _gapBetweenSlots),
+                          child: _PracticeSlotView(
+                            key: Key('practice_slot_${slot.name}'),
+                            label: timelineIndex == null ? '' : _labelFor(timelineIndex),
+                            measureIndex: timelineIndex,
+                            measure: timelineIndex != null ? _measureFor(timelineIndex) : null,
+                            showTimeSignature:
+                                timelineIndex != null && _showsTimeSignature(timelineIndex),
+                            isActive: isActive,
+                            playheadUnits: playheadUnits,
+                            marks: _hitMarks[timelineIndex] ?? const [],
+                            eventColors: noteColors[timelineIndex] ?? const {},
+                            hairpins: timelineIndex == null || timelineIndex == 0
+                                ? const []
+                                : _hairpins[timelineIndex - 1],
+                            staffHeight: staffHeight,
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                    _buildActionButton(),
+                    const SizedBox(height: 8),
+                  ],
                 ),
-                _buildActionButton(),
-                const SizedBox(height: 8),
-              ],
-            ),
-          );
-        }),
+              );
+            },
+          ),
+        ),
       ),
     );
   }
+
+  /// [body], with confetti falling over it when the run just finished
+  /// deserves it (and the player hasn't turned it off): one above 90%
+  /// accuracy, or more of it for one all Perfect. A run that wasn't judged
+  /// never gets it.
+  Widget _withConfetti(BuildContext context, Widget body) {
+    final counts = _finalCounts;
+    final accuracy = counts == null ? null : runAccuracy(counts);
+    final celebrate =
+        _phase == _PracticePhase.done &&
+        accuracy != null &&
+        accuracy > _confettiAccuracy &&
+        SettingsScope.of(context).confetti;
+    if (!celebrate) return body;
+    final perfect = counts!.entries.every(
+      (entry) => entry.key == Judgement.perfect || entry.value == 0,
+    );
+    return Stack(
+      children: [
+        body,
+        Positioned.fill(
+          child: ConfettiBurst(
+            // A new burst for each run.
+            key: ValueKey(('confetti', _runGeneration)),
+            perfect: perfect,
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// A run more accurate than this ([runAccuracy]) gets confetti.
+  static const _confettiAccuracy = 0.9;
 
   /// Each judged note's colour, for the "colour notes by judgement"
   /// setting. Worked out again only when a new judgement arrives, not on
   /// every frame of the moving playhead -- the same map, unchanged, also
   /// spares the staffs a redraw.
   Map<int, Map<int, Color>> _noteColors() {
-    if (_noteColorsJudgementCount != _runJudgements.length) {
+    final palette = AppPalette.of(context);
+    if (_noteColorsJudgementCount != _runJudgements.length || _noteColorsPalette != palette) {
       _noteColorsJudgementCount = _runJudgements.length;
+      _noteColorsPalette = palette;
       _noteColorsCache = judgementEventColors(
         _runJudgements,
         layout: _layout,
         secondsPerUnit: _msPerUnit / 1000,
+        palette: palette,
       );
     }
     return _noteColorsCache;
   }
 
+  /// The latest hits for the timing needle -- worked out again only when a
+  /// new judgement arrives, so the needle isn't redrawn on every frame.
+  List<JudgedHit> _recentHits() {
+    if (_recentHitsJudgementCount != _runJudgements.length) {
+      _recentHitsJudgementCount = _runJudgements.length;
+      _recentHitsCache = TimingNeedle.recent(_runJudgements);
+    }
+    return _recentHitsCache;
+  }
+
+  List<JudgedHit> _recentHitsCache = const [];
+  int _recentHitsJudgementCount = 0;
+
   Map<int, Map<int, Color>> _noteColorsCache = const {};
   int _noteColorsJudgementCount = 0;
+  AppPalette? _noteColorsPalette;
 
+  static const double _verticalPadding = 8;
   static const double _gapAboveSlots = 4;
   static const double _gapBetweenSlots = 6;
 
-  /// The tallest staff (up to the usual height) that lets the playing
-  /// layout fit in [availableHeight] without scrolling, or the smallest
-  /// staff that still draws everything if nothing fits.
+  /// The tallest staff (up to the usual height) that lets the layout --
+  /// the playing one, or the one before a run -- fit in [availableHeight]
+  /// without scrolling, or the smallest staff that still draws everything
+  /// if nothing fits.
   ///
-  /// Adds up the playing layout's fixed parts by hand; the
-  /// "fits on a phone" test in `practice_screen_test.dart` is what keeps
-  /// these numbers honest.
-  static double _staffHeightToFit(double availableHeight) {
-    const fixedHeight = 8 * 2 // vertical padding
-        +
-        _JudgementBanner.height +
+  /// Adds up each layout's fixed parts by hand; the "fits on a phone" tests
+  /// in `practice_screen_test.dart` are what keep these numbers honest.
+  static double _staffHeightToFit(double availableHeight, {required bool playing}) {
+    const sharedHeight =
+        _verticalPadding * 2 +
         24 // status text
         +
         _gapAboveSlots +
@@ -835,11 +1014,16 @@ class _PracticeScreenState extends State<PracticeScreen>
         8 // space below the button
         +
         4; // margin for rounding
+    const playingHeight = sharedHeight + _JudgementBanner.height + TimingNeedle.height;
+    const idleHeight =
+        sharedHeight +
+        57 // tempo stepper (its tempo mark is the tallest part)
+        +
+        48; // rhythm sound switch
+    final fixedHeight = playing ? playingHeight : idleHeight;
     const perSlotOverhead = _PracticeSlotView.chromeHeight + _gapBetweenSlots;
     final perStaff = (availableHeight - fixedHeight) / PracticeSlot.values.length - perSlotOverhead;
-    return perStaff
-        .clamp(StaffNotationView.minHeight, StaffNotationView.defaultHeight)
-        .toDouble();
+    return perStaff.clamp(StaffNotationView.minHeight, StaffNotationView.defaultHeight).toDouble();
   }
 
   Widget _buildActionButton() {
@@ -860,21 +1044,47 @@ class _PracticeScreenState extends State<PracticeScreen>
         );
       case _PracticePhase.done:
         final review = _review;
-        return Wrap(
+        final fasterTempo = (_practiceTempoBpm + _tempoStepBpm).clamp(_minTempoBpm, _maxTempoBpm);
+        final canGoFaster = fasterTempo > _practiceTempoBpm;
+        final counts = _finalCounts;
+        final accuracy = counts == null ? null : runAccuracy(counts);
+        // A good enough run makes going faster the main button; otherwise
+        // it's the same tempo again.
+        final readyForFaster =
+            canGoFaster && accuracy != null && accuracy >= _readyForFasterAccuracy;
+        final again = readyForFaster ? OutlinedButton.icon : ElevatedButton.icon;
+        final faster = readyForFaster ? ElevatedButton.icon : OutlinedButton.icon;
+        final buttons = Wrap(
           alignment: WrapAlignment.center,
           spacing: 12,
+          runSpacing: 8,
           children: [
-            ElevatedButton.icon(
+            again(
               key: const Key('practice_again_button'),
               onPressed: _returnToIdle,
               icon: const Icon(Icons.replay),
               label: const Text('Practice Again'),
             ),
+            if (canGoFaster)
+              faster(
+                key: const Key('practice_again_faster_button'),
+                onPressed: _practiceAgainFaster,
+                icon: const Icon(Icons.fast_forward),
+                label: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('Again at '),
+                    TempoMark(beat: widget.score.tempoBeat, bpm: fasterTempo),
+                  ],
+                ),
+              ),
             if (review != null)
-              ElevatedButton.icon(
+              OutlinedButton.icon(
                 key: const Key('practice_review_button'),
                 onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => ReviewScreen(review: review, note: _runNote)),
+                  MaterialPageRoute(
+                    builder: (_) => ReviewScreen(review: review, note: _runNote),
+                  ),
                 ),
                 icon: const Icon(Icons.insights),
                 label: const Text('Review'),
@@ -886,6 +1096,37 @@ class _PracticeScreenState extends State<PracticeScreen>
                 icon: const Icon(Icons.edit_note),
                 label: Text(_runNote.isEmpty ? 'Add note' : 'Edit note'),
               ),
+          ],
+        );
+        final dynamics = _dynamics;
+        final dynamicsLine = dynamics == null ? null : dynamicsSummary(dynamics);
+        if (!readyForFaster && dynamicsLine == null) return buttons;
+        return Column(
+          children: [
+            if (dynamicsLine != null) ...[
+              Text(
+                '$dynamicsLine -- see Review',
+                key: const Key('practice_dynamics_summary'),
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 8),
+            ],
+            if (readyForFaster) ...[
+              DefaultTextStyle.merge(
+                style: Theme.of(context).textTheme.titleMedium,
+                child: Row(
+                  key: const Key('practice_ready_faster'),
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('${accuracyText(accuracy)}. Ready for '),
+                    TempoMark(beat: widget.score.tempoBeat, bpm: fasterTempo),
+                    const Text('?'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+            buttons,
           ],
         );
     }
@@ -971,7 +1212,7 @@ class _JudgementBanner extends StatelessWidget {
               judgementLabelWithDirection(hit),
               key: ValueKey(judgementCount),
               style: textTheme.headlineMedium?.copyWith(
-                color: judgementColor(hit.judgement),
+                color: judgementColor(hit.judgement, AppPalette.of(context)),
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -980,12 +1221,20 @@ class _JudgementBanner extends StatelessWidget {
 }
 
 class _TempoStepper extends StatelessWidget {
+  /// Shown as a tempo mark, so the player knows which note they're
+  /// counting (and tapping) at this speed.
+  final TempoBeat beat;
   final int bpm;
   final bool enabled;
   final VoidCallback onDecrease;
   final VoidCallback onIncrease;
 
+  /// Gets the tempo the player tapped, in the score's beat note.
+  final ValueChanged<int> onTapTempo;
+
   const _TempoStepper({
+    required this.onTapTempo,
+    required this.beat,
     required this.bpm,
     required this.enabled,
     required this.onDecrease,
@@ -1003,18 +1252,28 @@ class _TempoStepper extends StatelessWidget {
           icon: const Icon(Icons.remove_circle_outline),
         ),
         SizedBox(
-          width: 100,
-          child: Text(
-            '$bpm BPM',
-            key: const Key('practice_tempo_value'),
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.titleMedium,
+          width: 120,
+          child: Center(
+            child: TempoMark(
+              key: const Key('practice_tempo_value'),
+              beat: beat,
+              bpm: bpm,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
           ),
         ),
         IconButton(
           key: const Key('practice_tempo_increase'),
           onPressed: enabled ? onIncrease : null,
           icon: const Icon(Icons.add_circle_outline),
+        ),
+        const SizedBox(width: 4),
+        TapTempoButton(
+          key: const Key('practice_tap_tempo'),
+          minBpm: _PracticeScreenState._minTempoBpm,
+          maxBpm: _PracticeScreenState._maxTempoBpm,
+          enabled: enabled,
+          onTempo: onTapTempo,
         ),
       ],
     );
@@ -1030,6 +1289,7 @@ class _PracticeSlotView extends StatelessWidget {
   final double? playheadUnits;
   final List<StaffMark> marks;
   final Map<int, Color> eventColors;
+  final List<HairpinSegment> hairpins;
   final double staffHeight;
 
   /// Height of everything but the staff: the label line, the padding, and
@@ -1046,31 +1306,26 @@ class _PracticeSlotView extends StatelessWidget {
     required this.playheadUnits,
     required this.marks,
     required this.eventColors,
+    required this.hairpins,
     required this.staffHeight,
   });
 
   @override
   Widget build(BuildContext context) {
-    final highlightColor = Theme.of(context).colorScheme.primary;
+    final highlightColor = AppPalette.of(context).accent;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
         decoration: BoxDecoration(
-          border: Border.all(
-            color: isActive ? highlightColor : Colors.transparent,
-            width: 2,
-          ),
+          border: Border.all(color: isActive ? highlightColor : Colors.transparent, width: 2),
           color: isActive ? highlightColor.withValues(alpha: 0.08) : null,
         ),
         padding: const EdgeInsets.all(4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(
-              height: 16,
-              child: Text(label, style: Theme.of(context).textTheme.bodySmall),
-            ),
+            SizedBox(height: 16, child: Text(label, style: Theme.of(context).textTheme.bodySmall)),
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 300),
               child: measureIndex == null
@@ -1082,6 +1337,7 @@ class _PracticeSlotView extends StatelessWidget {
                       playheadUnits: playheadUnits,
                       marks: marks,
                       eventColors: eventColors,
+                      hairpins: hairpins,
                       height: staffHeight,
                     ),
             ),

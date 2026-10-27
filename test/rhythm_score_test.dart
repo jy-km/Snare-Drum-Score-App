@@ -32,9 +32,9 @@ void main() {
   group('withMeterFrom', () {
     const threeFour = TimeSignature(3, 4);
     Measure quarters(int count, {TimeSignature meter = TimeSignature.common}) => Measure(
-          List.filled(count, const RhythmEvent(NoteValue.quarter, EventType.normal)),
-          meter: meter,
-        );
+      List.filled(count, const RhythmEvent(NoteValue.quarter, EventType.normal)),
+      meter: meter,
+    );
 
     test('changes the chosen measure and every later empty one, never earlier ones', () {
       final score = RhythmScore.empty(measuresCount: 5).withMeterFrom(2, threeFour);
@@ -160,7 +160,8 @@ void main() {
 
     test('canReplace allows only what still fits', () {
       expect(measure.canReplace(1, NoteValue.quarter), isTrue); // 3 beats
-      final full = measure.appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal))
+      final full = measure
+          .appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal))
           .removeLast()
           .appendEvent(const RhythmEvent(NoteValue.eighth, EventType.normal))
           .appendEvent(const RhythmEvent(NoteValue.quarter, EventType.normal)); // 4 beats
@@ -195,5 +196,105 @@ void main() {
     expect(const TimeSignature(16, 8).isValid, isTrue);
     expect(const TimeSignature(17, 8).isValid, isFalse);
     expect(const TimeSignature(4, 16).isValid, isFalse, reason: 'sixteenths not offered');
+  });
+
+  test('A flam or drag belongs to a note: a rest never has one', () {
+    const flam = RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.flam);
+    expect(flam.ornament, Ornament.flam);
+    expect(flam, isNot(equals(const RhythmEvent(NoteValue.quarter, EventType.normal))));
+    expect(flam.durationUnits, NoteValue.quarter.units, reason: 'grace notes take no time');
+
+    const rest = RhythmEvent(NoteValue.quarter, EventType.rest, ornament: Ornament.drag);
+    expect(rest.ornament, Ornament.none);
+
+    expect(Ornament.flam.graceNoteCount, 1);
+    expect(Ornament.drag.graceNoteCount, 2);
+  });
+
+  test('A marcato is louder than an accent', () {
+    expect(EventType.marcato.velocity, greaterThan(EventType.accent.velocity));
+  });
+
+  test('A roll is still one note of its own length, as far as judging goes', () {
+    final plain = RhythmScore.empty(measuresCount: 1).copyWithMeasure(
+      0,
+      Measure(const [
+        RhythmEvent(NoteValue.quarter, EventType.normal),
+        RhythmEvent(NoteValue.quarter, EventType.rest),
+        RhythmEvent(NoteValue.half, EventType.normal),
+      ]),
+    );
+    final rolled = plain.copyWithMeasure(
+      0,
+      Measure(const [
+        RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.roll),
+        RhythmEvent(NoteValue.quarter, EventType.rest),
+        RhythmEvent(NoteValue.half, EventType.normal, ornament: Ornament.roll),
+      ]),
+    );
+
+    expect(rolled.noteStartUnits, plain.noteStartUnits);
+    expect(rolled.restSpanUnits, plain.restSpanUnits);
+    expect(Ornament.roll.graceNoteCount, 0);
+  });
+
+  test('Notes with grace strokes are counted among the notes, skipping rests', () {
+    final score = RhythmScore.empty(measuresCount: 2)
+        .copyWithMeasure(
+          0,
+          Measure(const [
+            RhythmEvent(NoteValue.quarter, EventType.normal),
+            RhythmEvent(NoteValue.quarter, EventType.rest),
+            RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.flam),
+            RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.roll),
+          ]),
+        )
+        .copyWithMeasure(
+          1,
+          Measure(const [RhythmEvent(NoteValue.half, EventType.accent, ornament: Ornament.drag)]),
+        );
+
+    expect(score.graceNoteIndexes, {1, 3});
+  });
+
+  test('Three triplet notes span the next longer plain note', () {
+    expect(NoteValue.quarterTriplet.units * 3, NoteValue.half.units);
+    expect(NoteValue.eighthTriplet.units * 3, NoteValue.quarter.units);
+    expect(NoteValue.sixteenthTriplet.units * 3, NoteValue.eighth.units);
+    expect(NoteValue.values.where((value) => value.isTriplet), hasLength(3));
+  });
+
+  group('Tempo beat', () {
+    test('150 BPM in half notes is 300 quarter notes a minute', () {
+      expect(TempoBeat.half.msPerUnit(150), closeTo(TempoBeat.quarter.msPerUnit(300), 1e-9));
+      expect(TempoBeat.eighth.msPerUnit(150), closeTo(TempoBeat.quarter.msPerUnit(75), 1e-9));
+      expect(TempoBeat.quarter.convert(150, TempoBeat.half), 300);
+      expect(TempoBeat.half.convert(150, TempoBeat.eighth), 37.5);
+    });
+
+    test('a dotted quarter is a quarter and a half: 60 of them a minute is 90 quarter notes', () {
+      expect(TempoBeat.dottedQuarter.units, NoteValue.quarter.units * 3 ~/ 2);
+      expect(TempoBeat.quarter.convert(60, TempoBeat.dottedQuarter), 90);
+      expect(TempoBeat.dottedQuarter.describe(60), '60 BPM (1/4.)');
+    });
+
+    test('a quarter note at 60 BPM lasts a second', () {
+      expect(TempoBeat.quarter.msPerUnit(60) * NoteValue.quarter.units, closeTo(1000, 1e-9));
+    });
+
+    test('is written out unless it is the usual quarter note', () {
+      expect(TempoBeat.quarter.describe(120), '120 BPM');
+      expect(TempoBeat.half.describe(150), '150 BPM (1/2)');
+      expect(TempoBeat.eighth.describe(200), '200 BPM (1/8)');
+    });
+
+    test('defaults to the quarter note and takes part in equality', () {
+      final score = RhythmScore.empty();
+      expect(score.tempoBeat, TempoBeat.quarter);
+      final half = score.copyWith(tempoBeat: TempoBeat.half);
+      expect(half.tempoBeat, TempoBeat.half);
+      expect(half, isNot(score));
+      expect(half.copyWith(tempoBpm: 90).tempoBeat, TempoBeat.half);
+    });
   });
 }

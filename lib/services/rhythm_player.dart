@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:clock/clock.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../models/rhythm_score.dart';
@@ -63,15 +64,19 @@ class RhythmPlayer {
     await stop();
 
     final tempoBpm = tempoBpmOverride ?? score.tempoBpm;
-    _msPerUnit = 60000 / tempoBpm / RhythmGrid.unitsPerQuarterNote;
+    _msPerUnit = score.tempoBeat.msPerUnit(tempoBpm);
     _totalUnits = score.totalUnits;
     final normalSamples = await ClickSound.normalSamples(score.instrument);
     final accentSamples = await ClickSound.accentSamples(score.instrument);
+    final marcatoSamples = await ClickSound.marcatoSamples(score.instrument);
+    final graceSamples = await ClickSound.graceSamples(score.instrument);
     final wavBytes = _renderSequence(
       score,
       msPerUnit: _msPerUnit,
       normalSamples: normalSamples,
       accentSamples: accentSamples,
+      marcatoSamples: marcatoSamples,
+      graceSamples: graceSamples,
     );
 
     _isPlaying = true;
@@ -99,13 +104,13 @@ class RhythmPlayer {
 
     if (_anchor == null) {
       if (position < _minStartupPosition) return;
-      _anchor = DateTime.now().subtract(position);
+      _anchor = clock.now().subtract(position);
       return;
     }
 
     // Gentle correction thereafter, to avoid visible jumps from any single
     // noisy sample while still preventing long-term drift.
-    final sampleAnchor = DateTime.now().subtract(position);
+    final sampleAnchor = clock.now().subtract(position);
     final driftMicros = sampleAnchor.difference(_anchor!).inMicroseconds;
     _anchor = _anchor!.add(Duration(microseconds: (driftMicros * 0.2).round()));
   }
@@ -114,9 +119,18 @@ class RhythmPlayer {
     if (!_isPlaying) return;
     final anchor = _anchor;
     if (anchor != null) {
-      final elapsedMs = DateTime.now().difference(anchor).inMicroseconds / 1000.0;
-      final unitPosition = (elapsedMs / _msPerUnit).clamp(0, _totalUnits.toDouble()).toDouble();
-      _positionController.add(unitPosition);
+      final elapsedMs = clock.now().difference(anchor).inMicroseconds / 1000.0;
+      final unitPosition = elapsedMs / _msPerUnit;
+      if (unitPosition >= _totalUnits) {
+        // The end of the last measure is the end of the track. The audio
+        // itself runs on for as long as the last hit rings (over three
+        // seconds for the snare), and waiting for the native player to
+        // report that it finished would leave the playhead parked at the
+        // end, still "playing", all that time. The ring is left to play out.
+        _stopInternal();
+        return;
+      }
+      _positionController.add(unitPosition.clamp(0, _totalUnits.toDouble()).toDouble());
     }
     SchedulerBinding.instance.scheduleFrameCallback(_onFrame);
   }
@@ -128,6 +142,8 @@ class RhythmPlayer {
     required double msPerUnit,
     required Int16List normalSamples,
     required Int16List accentSamples,
+    required Int16List marcatoSamples,
+    required Int16List graceSamples,
   }) {
     // Kept fractional and rounded per hit, not once per unit: a unit is a
     // small fraction of a beat, so a per-unit rounding error would add up
@@ -139,6 +155,14 @@ class RhythmPlayer {
         ? normalSamples.length
         : accentSamples.length;
     final mixBuffer = Int32List((totalUnits * samplesPerUnit).ceil() + tailLength);
+    // Each note turned up or down for the dynamics written at it, never past
+    // what its sound has room for.
+    final gains = ClickSound.dynamicGains(score);
+    final headroom = {
+      for (final samples in [normalSamples, accentSamples, marcatoSamples, graceSamples])
+        samples: ClickSound.headroom(samples),
+    };
+    var noteIndex = 0;
 
     for (var measureIndex = 0; measureIndex < score.measures.length; measureIndex++) {
       final measure = score.measures[measureIndex];
@@ -146,10 +170,32 @@ class RhythmPlayer {
 
       for (final event in measure.events) {
         if (!event.isRest) {
+          final gain = gains[noteIndex++];
+          void mix(int start, Int16List samples) => ClickSound.mixInto(
+            mixBuffer,
+            start,
+            samples,
+            gain: gain,
+            headroom: headroom[samples]!,
+          );
           final startSample = (unitCursor * samplesPerUnit).round();
-          final clickSamples = event.type == EventType.accent ? accentSamples : normalSamples;
-          for (var i = 0; i < clickSamples.length; i++) {
-            mixBuffer[startSample + i] += clickSamples[i];
+          mix(
+            startSample,
+            ClickSound.samplesForType(
+              event.type,
+              normal: normalSamples,
+              accent: accentSamples,
+              marcato: marcatoSamples,
+            ),
+          );
+          for (final units in ClickSound.rollStrokeUnits(event)) {
+            mix(((unitCursor + units) * samplesPerUnit).round(), normalSamples);
+          }
+          // A grace stroke before the very first note has nowhere earlier
+          // to go, so it is left out.
+          for (final lead in ClickSound.graceLeadSamples(event.ornament, msPerUnit)) {
+            if (lead > startSample) continue;
+            mix(startSample - lead, graceSamples);
           }
         }
         unitCursor += event.durationUnits;

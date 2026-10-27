@@ -21,19 +21,17 @@ class TimelineLayout {
   /// beat), so it leads into Measure 1 the way a conductor would.
   TimeSignature get countInMeter => score.measures.first.meter;
 
-  /// Visual stand-in for the count-in: one note per click -- a quarter note
-  /// per quarter-note beat, an eighth per eighth-note beat. There's no
-  /// "half note" [NoteValue], so a half-note beat is shown as 2 back-to-back
-  /// quarter notes instead of inventing a new note value just for this.
+  /// Visual stand-in for the count-in: one note per click -- a half note
+  /// per half-note beat, a quarter per quarter-note beat, an eighth per
+  /// eighth-note beat.
   late final Measure countInMeasure = () {
-    final beatNote = countInMeter.unitsPerBeat < NoteValue.quarter.units
-        ? NoteValue.eighth
-        : NoteValue.quarter;
+    final beatNote = const [
+      NoteValue.half,
+      NoteValue.quarter,
+      NoteValue.eighth,
+    ].firstWhere((value) => value.units <= countInMeter.unitsPerBeat);
     return Measure(
-      List.filled(
-        countInMeter.units ~/ beatNote.units,
-        RhythmEvent(beatNote, EventType.normal),
-      ),
+      List.filled(countInMeter.units ~/ beatNote.units, RhythmEvent(beatNote, EventType.normal)),
       meter: countInMeter,
     );
   }();
@@ -98,9 +96,11 @@ class TimelineLayout {
   /// (1-based).
   late final List<(int, int)> noteLocations = [
     for (var measureIndex = 0; measureIndex < score.measures.length; measureIndex++)
-      for (var noteNumber = 1;
-          noteNumber <= score.measures[measureIndex].events.where((e) => !e.isRest).length;
-          noteNumber++)
+      for (
+        var noteNumber = 1;
+        noteNumber <= score.measures[measureIndex].events.where((e) => !e.isRest).length;
+        noteNumber++
+      )
         (measureIndex + firstMeasureNumber, noteNumber),
   ];
 }

@@ -22,6 +22,7 @@ class InMemoryPracticeHistoryStore implements PracticeHistoryStore {
       scoreId: scoreId,
       startedAt: startedAt,
       tempoBpm: tempoBpm,
+      tempoBeat: review.layout.score.tempoBeat,
       counts: review.counts,
       durationSeconds: review.audioSeconds,
       note: '',

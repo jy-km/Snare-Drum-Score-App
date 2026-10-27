@@ -100,6 +100,29 @@ void main() {
       expect(store.values['colorNotesByJudgement'], isFalse);
     });
 
+    testWidgets('Confetti is on by default, and turning it off is remembered', (tester) async {
+      final store = InMemorySettingsStore();
+      final settings = AppSettings(store: store);
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => SettingsScope(settings: settings, child: child!),
+          home: const SettingsScreen(),
+        ),
+      );
+      final toggle = find.byKey(const Key('setting_confetti'));
+      expect(tester.widget<SwitchListTile>(toggle).value, isTrue);
+
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pump();
+
+      expect(settings.confetti, isFalse);
+      expect(store.values['confetti'], isFalse);
+      final reloaded = AppSettings(store: InMemorySettingsStore(store.values));
+      await reloaded.load();
+      expect(reloaded.confetti, isFalse);
+    });
+
     test('Saved settings are loaded back', () async {
       final settings = AppSettings(store: InMemorySettingsStore({'colorNotesByJudgement': true}));
       expect(settings.colorNotesByJudgement, isFalse, reason: 'defaults until loaded');

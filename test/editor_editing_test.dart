@@ -68,8 +68,9 @@ void main() {
       expect(picked(tester), isNull);
     });
 
-    testWidgets('A length button changes the picked note, and later notes move along',
-        (tester) async {
+    testWidgets('A length button changes the picked note, and later notes move along', (
+      tester,
+    ) async {
       await pumpEditor(tester);
       await enterQuarters(tester, 3);
 
@@ -85,8 +86,9 @@ void main() {
       expect(picked(tester), 1, reason: 'stays picked for further changes');
     });
 
-    testWidgets('A length that would overflow the measure is disabled for the picked note',
-        (tester) async {
+    testWidgets('A length that would overflow the measure is disabled for the picked note', (
+      tester,
+    ) async {
       await pumpEditor(tester);
       await enterQuarters(tester, 3);
       await tapButton(tester, 'duration_eighth');
@@ -95,8 +97,7 @@ void main() {
       await tapStaffAt(tester, 38); // the first eighth
       expect(picked(tester), 3);
       final quarter = tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
-      final sixteenth =
-          tester.widget<ElevatedButton>(find.byKey(const Key('duration_sixteenth')));
+      final sixteenth = tester.widget<ElevatedButton>(find.byKey(const Key('duration_sixteenth')));
       expect(quarter.onPressed, isNull, reason: 'a quarter instead of the eighth would overflow');
       expect(sixteenth.onPressed, isNotNull, reason: 'shorter always fits');
     });
@@ -132,7 +133,10 @@ void main() {
       await tapStaffAt(tester, 13); // the eighth
       await tapButton(tester, 'backspace');
 
-      expect(staffMeasure(tester).events.map((e) => e.value), [NoteValue.quarter, NoteValue.quarter]);
+      expect(staffMeasure(tester).events.map((e) => e.value), [
+        NoteValue.quarter,
+        NoteValue.quarter,
+      ]);
       expect(picked(tester), isNull);
     });
 
@@ -157,8 +161,9 @@ void main() {
   });
 
   group('Deleting measures', () {
-    testWidgets('An empty measure is deleted straight away; later measures move up',
-        (tester) async {
+    testWidgets('An empty measure is deleted straight away; later measures move up', (
+      tester,
+    ) async {
       await pumpEditor(tester);
       await tapButton(tester, 'measure_tab_2');
       await enterQuarters(tester, 2); // measure 3 has notes
@@ -167,8 +172,11 @@ void main() {
       await tapButton(tester, 'measure_tab_delete');
 
       expect(find.byKey(const Key('measure_tab_7')), findsNothing, reason: '7 measures left');
-      expect(find.text('2 of 4 beats filled'), findsOneWidget,
-          reason: 'the old measure 3 is now measure 2, and is the one shown');
+      expect(
+        find.text('2 of 4 beats filled'),
+        findsOneWidget,
+        reason: 'the old measure 3 is now measure 2, and is the one shown',
+      );
     });
 
     testWidgets('A measure with notes asks first', (tester) async {
@@ -212,5 +220,132 @@ void main() {
     expect(find.text('6 of 7 beats filled'), findsOneWidget);
     final quarter = tester.widget<ElevatedButton>(find.byKey(const Key('duration_quarter')));
     expect(quarter.onPressed, isNull, reason: 'one eighth left');
+  });
+
+  group('Marcato, flam and drag', () {
+    bool isOn(WidgetTester tester, String key) {
+      final button = tester.widget<OutlinedButton>(find.byKey(Key(key)));
+      return button.style?.backgroundColor?.resolve({}) != null;
+    }
+
+    testWidgets('Marcato is a type like Accent', (tester) async {
+      await pumpEditor(tester);
+
+      await tapButton(tester, 'type_marcato');
+      await tapButton(tester, 'duration_quarter');
+
+      expect(staffMeasure(tester).events, [
+        const RhythmEvent(NoteValue.quarter, EventType.marcato),
+      ]);
+    });
+
+    testWidgets('Flam and Drag switch on and off, one at a time', (tester) async {
+      await pumpEditor(tester);
+
+      await tapButton(tester, 'ornament_flam');
+      expect(isOn(tester, 'ornament_flam'), isTrue);
+      await tapButton(tester, 'duration_quarter');
+      await tapButton(tester, 'ornament_drag');
+      expect(isOn(tester, 'ornament_flam'), isFalse);
+      expect(isOn(tester, 'ornament_drag'), isTrue);
+      await tapButton(tester, 'type_accent');
+      await tapButton(tester, 'duration_quarter');
+      await tapButton(tester, 'ornament_drag');
+      expect(isOn(tester, 'ornament_drag'), isFalse);
+      await tapButton(tester, 'duration_quarter');
+
+      expect(staffMeasure(tester).events, [
+        const RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.flam),
+        const RhythmEvent(NoteValue.quarter, EventType.accent, ornament: Ornament.drag),
+        const RhythmEvent(NoteValue.quarter, EventType.accent),
+      ]);
+    });
+
+    testWidgets('They change the picked note, and show what it has', (tester) async {
+      await pumpEditor(tester);
+      await enterQuarters(tester, 2);
+
+      await tapStaffAt(tester, 12);
+      await tapButton(tester, 'ornament_flam');
+      expect(
+        staffMeasure(tester).events[1],
+        const RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.flam),
+      );
+
+      // Changing its length or type keeps the flam.
+      await tapButton(tester, 'duration_eighth');
+      await tapButton(tester, 'type_marcato');
+      expect(
+        staffMeasure(tester).events[1],
+        const RhythmEvent(NoteValue.eighth, EventType.marcato, ornament: Ornament.flam),
+      );
+
+      await tapStaffAt(tester, 0);
+      expect(isOn(tester, 'ornament_flam'), isFalse, reason: 'the first note has none');
+      await tapStaffAt(tester, 12);
+      expect(isOn(tester, 'ornament_flam'), isTrue);
+      expect(isOn(tester, 'type_marcato'), isTrue);
+    });
+
+    testWidgets('Roll is entered like Flam and Drag, and replaces them', (tester) async {
+      await pumpEditor(tester);
+
+      await tapButton(tester, 'ornament_roll');
+      expect(isOn(tester, 'ornament_roll'), isTrue);
+      await tapButton(tester, 'duration_quarter');
+      await tapButton(tester, 'ornament_flam');
+      expect(isOn(tester, 'ornament_roll'), isFalse);
+      await tapButton(tester, 'duration_quarter');
+
+      await tapStaffAt(tester, 12);
+      await tapButton(tester, 'ornament_roll');
+
+      expect(staffMeasure(tester).events, [
+        const RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.roll),
+        const RhythmEvent(NoteValue.quarter, EventType.normal, ornament: Ornament.roll),
+      ]);
+      expect(find.text('2 of 4 beats filled'), findsOneWidget);
+    });
+
+    testWidgets('A rest can\'t have one', (tester) async {
+      await pumpEditor(tester);
+
+      await tapButton(tester, 'ornament_drag');
+      await tapButton(tester, 'type_rest');
+      final drag = tester.widget<OutlinedButton>(find.byKey(const Key('ornament_drag')));
+      expect(drag.onPressed, isNull);
+      await tapButton(tester, 'duration_quarter');
+
+      expect(staffMeasure(tester).events, [const RhythmEvent(NoteValue.quarter, EventType.rest)]);
+    });
+  });
+
+  testWidgets('Quarter-note and sixteenth-note triplets are entered a note at a time', (
+    tester,
+  ) async {
+    await pumpEditor(tester);
+
+    await tapButton(tester, 'duration_quarter_triplet');
+    expect(find.text('⅔ of 4 beats filled'), findsOneWidget);
+    await tapButton(tester, 'duration_quarter_triplet');
+    await tapButton(tester, 'duration_quarter_triplet');
+    expect(find.text('2 of 4 beats filled'), findsOneWidget);
+
+    for (var i = 0; i < 6; i++) {
+      await tapButton(tester, 'duration_sixteenth_triplet');
+    }
+    expect(find.text('3 of 4 beats filled'), findsOneWidget);
+    await tapButton(tester, 'duration_quarter');
+
+    final events = staffMeasure(tester).events;
+    expect(events.take(3).every((event) => event.value == NoteValue.quarterTriplet), isTrue);
+    expect(
+      events.skip(3).take(6).every((event) => event.value == NoteValue.sixteenthTriplet),
+      isTrue,
+    );
+    final quarterTriplet = tester.widget<ElevatedButton>(
+      find.byKey(const Key('duration_quarter_triplet')),
+    );
+    expect(quarterTriplet.onPressed, isNull, reason: 'the measure is full');
   });
 }

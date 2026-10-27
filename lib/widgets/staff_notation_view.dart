@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../models/rhythm_score.dart';
+import 'app_theme.dart';
+import 'beam_groups.dart';
 
 /// Renders one measure as real staff notation using the Bravura SMuFL font,
 /// with noteheads always on the "C5" third space (the fixed-pitch convention
@@ -41,15 +43,24 @@ class StaffNotationView extends StatelessWidget {
   final int? selectedEventIndex;
 
   /// Colours for individual events (by index into [measure]'s events),
-  /// drawn instead of black -- e.g. each note in the colour of the
-  /// judgement it got. Events not listed stay black. A new map must be
+  /// drawn instead of the ink colour -- e.g. each note in the colour of the
+  /// judgement it got. Events not listed stay in ink. A new map must be
   /// passed for a change to be drawn.
   final Map<int, Color> eventColors;
+
+  /// The parts of hairpins (crescendos, decrescendos) under this measure
+  /// -- see [RhythmScore.hairpinSegmentsIn]. A note's dynamic marking comes
+  /// with the note itself. A new list must be passed for a change to be
+  /// drawn.
+  final List<HairpinSegment> hairpins;
 
   /// Called when the staff is tapped: with the index of the event tapped,
   /// or null for a tap where there is none (e.g. the empty end of the
   /// measure). Without it, the staff doesn't respond to taps.
   final ValueChanged<int?>? onTapEvent;
+
+  /// The SMuFL glyph for [mark], as written under the staff.
+  static String dynamicGlyph(DynamicMark mark) => _StaffPainter._dynamicGlyphs[mark]!;
 
   static const double defaultHeight = 140;
   static const double minHeight = 112;
@@ -65,6 +76,7 @@ class StaffNotationView extends StatelessWidget {
     this.selectedEventIndex,
     this.onTapEvent,
     this.eventColors = const {},
+    this.hairpins = const [],
   }) : assert(height >= minHeight);
 
   /// Where, across a staff [width] wide, position [units] within [measure]
@@ -89,11 +101,21 @@ class StaffNotationView extends StatelessWidget {
       final end = start + measure.events[index].durationUnits;
       // A note's stretch begins a little before its left edge, where its
       // notehead starts to read as "this note" to a finger.
-      final left = xForUnits(measure,
-              showTimeSignature: showTimeSignature, width: width, units: start.toDouble()) -
+      final left =
+          xForUnits(
+            measure,
+            showTimeSignature: showTimeSignature,
+            width: width,
+            units: start.toDouble(),
+          ) -
           _StaffPainter._tapSlop;
-      final right = xForUnits(measure,
-              showTimeSignature: showTimeSignature, width: width, units: end.toDouble()) -
+      final right =
+          xForUnits(
+            measure,
+            showTimeSignature: showTimeSignature,
+            width: width,
+            units: end.toDouble(),
+          ) -
           _StaffPainter._tapSlop;
       if (dx >= left && dx < right) return index;
       start = end;
@@ -105,6 +127,7 @@ class StaffNotationView extends StatelessWidget {
   Widget build(BuildContext context) {
     final staff = CustomPaint(
       painter: _StaffPainter(
+        palette: AppPalette.of(context),
         measure: measure,
         showTimeSignature: showTimeSignature,
         playheadUnits: playheadUnits,
@@ -112,6 +135,7 @@ class StaffNotationView extends StatelessWidget {
         marks: marks,
         selectedEventIndex: selectedEventIndex,
         eventColors: eventColors,
+        hairpins: hairpins,
       ),
     );
     final onTap = onTapEvent;
@@ -149,15 +173,13 @@ class StaffMark {
   /// Needs the staff's full [StaffNotationView.defaultHeight] to fit.
   final String? label;
 
-  const StaffMark({
-    required this.units,
-    required this.color,
-    this.isAbsence = false,
-    this.label,
-  });
+  const StaffMark({required this.units, required this.color, this.isAbsence = false, this.label});
 }
 
 class _StaffPainter extends CustomPainter {
+  /// Ink for the staff and notes; the accent for the playhead and the
+  /// picked note.
+  final AppPalette palette;
   final Measure measure;
   final bool showTimeSignature;
   final double? playheadUnits;
@@ -165,8 +187,10 @@ class _StaffPainter extends CustomPainter {
   final List<StaffMark> marks;
   final int? selectedEventIndex;
   final Map<int, Color> eventColors;
+  final List<HairpinSegment> hairpins;
 
   _StaffPainter({
+    required this.palette,
     required this.measure,
     required this.showTimeSignature,
     this.playheadUnits,
@@ -174,7 +198,25 @@ class _StaffPainter extends CustomPainter {
     required this.marks,
     this.selectedEventIndex,
     this.eventColors = const {},
+    this.hairpins = const [],
   });
+
+  /// SMuFL's dynamic letters, as written under the staff.
+  static const _dynamicGlyphs = {
+    DynamicMark.pp: '\uE52B', // dynamicPP
+    DynamicMark.p: '\uE520', // dynamicPiano
+    DynamicMark.mp: '\uE52C', // dynamicMP
+    DynamicMark.mf: '\uE52D', // dynamicMF
+    DynamicMark.f: '\uE522', // dynamicForte
+    DynamicMark.ff: '\uE52F', // dynamicFF
+  };
+
+  static const double _dynamicFontSize = _fontSize * 0.6;
+
+  /// Where dynamics sit: just under the staff, above the row of hit marks.
+  static const double _dynamicsBaseline = _lineSpacing * 1.45;
+  static const double _hairpinMiddle = _lineSpacing * 1.1;
+  static const double _hairpinOpening = _lineSpacing * 0.45;
 
   /// How far left of a note's drawn edge its tappable (and highlighted)
   /// stretch starts.
@@ -202,6 +244,25 @@ class _StaffPainter extends CustomPainter {
 
   static const String _tuplet3 = '';
 
+  static const String _articMarcatoAbove = '';
+
+  /// The mark printed over a note of each type that has one.
+  static const _articulationGlyphs = {
+    EventType.accent: _articAccentAbove,
+    EventType.marcato: _articMarcatoAbove,
+  };
+
+  // A flam's grace note: a small eighth note with a stroke through its stem.
+  static const String _graceNoteSlashed = ''; // graceNoteAcciaccaturaStemUp
+
+  /// How much smaller than a full note a drag's grace notes are drawn (the
+  /// flam's glyph is made that small already).
+  static const double _graceScale = 0.6;
+
+  /// How far left of its note's edge a grace note's edge is, and how far
+  /// apart a drag's two are.
+  static const double _graceGap = _lineSpacing * 0.9;
+
   /// Approximate notehead width at [_fontSize], so a triplet bracket can
   /// reach the right edge of its last note rather than stopping at its left.
   static const double _noteheadWidth = _lineSpacing * 1.2;
@@ -209,13 +270,50 @@ class _StaffPainter extends CustomPainter {
   // A triplet eighth is drawn as an ordinary eighth; the "3" over its group
   // (see [_paintTripletMark]) is what marks it as a triplet.
   static const _noteGlyphs = {
+    NoteValue.half: '', // noteHalfUp
     NoteValue.eighthTriplet: '', // note8thUp
     NoteValue.quarter: '', // noteQuarterUp
     NoteValue.eighth: '', // note8thUp
     NoteValue.sixteenth: '', // note16thUp
   };
 
+  /// The plain note a triplet note is drawn as (the "3" over its group is
+  /// what marks it): its own shape for anything else.
+  static NoteValue _drawnAs(NoteValue value) {
+    switch (value) {
+      case NoteValue.quarterTriplet:
+        return NoteValue.quarter;
+      case NoteValue.eighthTriplet:
+        return NoteValue.eighth;
+      case NoteValue.sixteenthTriplet:
+        return NoteValue.sixteenth;
+      case NoteValue.half:
+      case NoteValue.quarter:
+      case NoteValue.eighth:
+      case NoteValue.sixteenth:
+        return value;
+    }
+  }
+
+  /// A note under a beam is drawn as a notehead and stem only -- the quarter
+  /// note's shape -- with the beam drawn over the stems in place of flags.
+  static const String _beamedNoteGlyph = ''; // noteQuarterUp
+
+  // The font's own measurements for that glyph, in staff spaces: where its
+  // stem stands and how far it reaches above the middle of the notehead.
+  static const double _stemRight = _lineSpacing * 1.18;
+  static const double _stemThickness = _lineSpacing * 0.12;
+  static const double _stemHeight = _lineSpacing * 3.5;
+
+  static const double _beamThickness = _lineSpacing * 0.5;
+  static const double _beamGap = _lineSpacing * 0.25;
+
+  /// How long a sixteenth's second beam is when the note has no sixteenth
+  /// beside it to reach across to.
+  static const double _beamStubLength = _lineSpacing * 1.1;
+
   static const _restGlyphs = {
+    NoteValue.half: '', // restHalf
     NoteValue.eighthTriplet: '', // rest8th
     NoteValue.quarter: '', // restQuarter
     NoteValue.eighth: '', // rest8th
@@ -225,7 +323,8 @@ class _StaffPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     // Everything drawn spans from about 8.1 staff spaces above the bottom
-    // staff line (a triplet's "3") to about 2.7 below it (the marks under
+    // staff line (a triplet's "3"; half a space more over an accented,
+    // beamed triplet) to about 2.7 below it (the marks under
     // the staff); centring that span, rather than the staff itself, is what
     // lets it fit in [StaffNotationView.minHeight].
     final staffBottom = size.height / 2 + _lineSpacing * 2.7;
@@ -233,7 +332,7 @@ class _StaffPainter extends CustomPainter {
     final c5Y = staffBottom - 2.5 * _lineSpacing; // third space from bottom
 
     final linePaint = Paint()
-      ..color = Colors.black87
+      ..color = _ink
       ..strokeWidth = 1;
     for (var i = 0; i < 5; i++) {
       final y = staffBottom - i * _lineSpacing;
@@ -248,11 +347,11 @@ class _StaffPainter extends CustomPainter {
     final unitsTotal = measure.capacityUnits.toDouble();
 
     double xForUnit(double unit) => StaffNotationView.xForUnits(
-          measure,
-          showTimeSignature: showTimeSignature,
-          width: size.width,
-          units: unit,
-        );
+      measure,
+      showTimeSignature: showTimeSignature,
+      width: size.width,
+      units: unit,
+    );
 
     final selected = selectedEventIndex;
     if (selected != null && selected < measure.events.length) {
@@ -268,46 +367,87 @@ class _StaffPainter extends CustomPainter {
           staffBottom + 1.5 * _lineSpacing,
           const Radius.circular(6),
         ),
-        Paint()..color = Colors.blue.withValues(alpha: 0.18),
+        Paint()..color = palette.accent.withValues(alpha: 0.16),
       );
     }
 
     // X-positions of the triplet group currently being collected: consecutive
-    // triplet events, marked with a "3" once three are in (or once the run
-    // is broken off early by a different note value or the end of the
-    // measure).
+    // triplet events of one length, marked with a "3" once three are in (or
+    // once the run is broken off early by a different note value or the end
+    // of the measure).
     final tripletGroupXs = <double>[];
+    NoteValue? tripletGroupValue;
+    // Whether a note of that group has an accent above its beam, which the
+    // "3" then has to clear.
+    var tripletGroupHasBeamedAccent = false;
     void markTripletGroup() {
       if (tripletGroupXs.isEmpty) return;
       _paintTripletMark(
         canvas,
         tripletGroupXs.first,
         tripletGroupXs.last + _noteheadWidth,
-        staffBottom - 7.5 * _lineSpacing,
+        staffBottom - (tripletGroupHasBeamedAccent ? 8 : 7.5) * _lineSpacing,
       );
       tripletGroupXs.clear();
+      tripletGroupHasBeamedAccent = false;
     }
+
+    final groups = beamGroups(measure);
+    final beamedEvents = {
+      for (final group in groups)
+        for (final note in group) note.eventIndex,
+    };
 
     var cursorUnit = 0;
     for (final (eventIndex, event) in measure.events.indexed) {
       final x = xForUnit(cursorUnit.toDouble());
-      if (event.value == NoteValue.eighthTriplet) {
+      if (event.value.isTriplet) {
+        if (event.value != tripletGroupValue) markTripletGroup();
+        tripletGroupValue = event.value;
         tripletGroupXs.add(x);
+        if (_articulationGlyphs.containsKey(event.type) && beamedEvents.contains(eventIndex)) {
+          tripletGroupHasBeamedAccent = true;
+        }
         if (tripletGroupXs.length == 3) markTripletGroup();
       } else {
         markTripletGroup();
       }
       final color = eventColors[eventIndex] ?? _ink;
       if (event.isRest) {
-        _paintGlyph(canvas, _restGlyphs[event.value]!, x, middleLineY, _fontSize, color: color);
+        _paintGlyph(
+          canvas,
+          _restGlyphs[_drawnAs(event.value)]!,
+          x,
+          middleLineY,
+          _fontSize,
+          color: color,
+        );
       } else {
-        _paintGlyph(canvas, _noteGlyphs[event.value]!, x, c5Y, _fontSize, color: color);
-        if (event.type == EventType.accent) {
+        final beamed = beamedEvents.contains(eventIndex);
+        _paintGlyph(
+          canvas,
+          beamed ? _beamedNoteGlyph : _noteGlyphs[_drawnAs(event.value)]!,
+          x,
+          c5Y,
+          _fontSize,
+          color: color,
+        );
+        _paintGraceNotes(canvas, event.ornament.graceNoteCount, x, c5Y, color);
+        if (event.ornament == Ornament.roll) {
+          // Slashes and beams (or flags) add up to three, as printed music
+          // writes a roll: three on a quarter, two on an eighth, one on a
+          // sixteenth.
+          _paintRollSlashes(canvas, 3 - beamCount(event.value), x, c5Y, color);
+        }
+        final articulation = _articulationGlyphs[event.type];
+        if (articulation != null) {
+          // Beside the stem, where a flagged note has room for it; a beam
+          // runs through there, so under one the accent goes above the beam.
           _paintGlyph(
             canvas,
-            _articAccentAbove,
+            articulation,
             x,
-            c5Y - _lineSpacing * 2.5,
+            beamed ? c5Y - _stemHeight - _lineSpacing * 0.2 : c5Y - _lineSpacing * 2.5,
             _fontSize * 0.7,
             color: color,
           );
@@ -316,6 +456,18 @@ class _StaffPainter extends CustomPainter {
       cursorUnit += event.durationUnits;
     }
     markTripletGroup();
+
+    for (final group in groups) {
+      _paintBeams(
+        canvas,
+        [for (final note in group) xForUnit(note.startUnits.toDouble())],
+        [for (final note in group) note.beams],
+        [for (final note in group) eventColors[note.eventIndex] ?? _ink],
+        c5Y - _stemHeight,
+      );
+    }
+
+    _paintDynamics(canvas, staffBottom, xForUnit);
 
     // Shifted half a notehead right of the time-to-position formula, which
     // gives a note's left edge: an on-time hit then sits centered under its
@@ -328,8 +480,16 @@ class _StaffPainter extends CustomPainter {
         final crossPaint = Paint()
           ..color = mark.color
           ..strokeWidth = 2;
-        canvas.drawLine(center + const Offset(-arm, -arm), center + const Offset(arm, arm), crossPaint);
-        canvas.drawLine(center + const Offset(-arm, arm), center + const Offset(arm, -arm), crossPaint);
+        canvas.drawLine(
+          center + const Offset(-arm, -arm),
+          center + const Offset(arm, arm),
+          crossPaint,
+        );
+        canvas.drawLine(
+          center + const Offset(-arm, arm),
+          center + const Offset(arm, -arm),
+          crossPaint,
+        );
       } else {
         canvas.drawCircle(center, 4.5, Paint()..color = mark.color);
       }
@@ -352,7 +512,7 @@ class _StaffPainter extends CustomPainter {
         Offset(x, staffBottom + _lineSpacing),
         Offset(x, staffBottom - 5 * _lineSpacing),
         Paint()
-          ..color = Colors.blue.withValues(alpha: 0.5)
+          ..color = palette.mutedInk
           ..strokeWidth = 2,
       );
     }
@@ -363,8 +523,58 @@ class _StaffPainter extends CustomPainter {
         Offset(x, staffBottom + _lineSpacing),
         Offset(x, staffBottom - 5 * _lineSpacing),
         Paint()
-          ..color = Colors.orange
+          ..color = palette.accent
           ..strokeWidth = 3,
+      );
+    }
+  }
+
+  /// Draws each note's dynamic marking under it, and the hairpins.
+  void _paintDynamics(Canvas canvas, double staffBottom, double Function(double) xForUnit) {
+    final markedAt = <int, double>{}; // start unit -> width of the marking there
+    var unit = 0;
+    for (final (eventIndex, event) in measure.events.indexed) {
+      final mark = event.dynamicMark;
+      if (mark != null) {
+        final glyph = _dynamicGlyphs[mark]!;
+        _paintGlyph(
+          canvas,
+          glyph,
+          xForUnit(unit.toDouble()),
+          staffBottom + _dynamicsBaseline,
+          _dynamicFontSize,
+          color: eventColors[eventIndex] ?? _ink,
+        );
+        markedAt[unit] = _cachedGlyphPainter(glyph, _dynamicFontSize).width;
+      }
+      unit += event.durationUnits;
+    }
+
+    final paint = Paint()
+      ..color = _ink
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    final middle = staffBottom + _hairpinMiddle;
+    for (final segment in hairpins) {
+      var left = xForUnit(segment.startUnits);
+      // Clear of a marking written at the note it starts from ("p <").
+      final markWidth = segment.startFraction == 0 ? markedAt[segment.startUnits.round()] : null;
+      if (markWidth != null) left += markWidth + 4;
+      final right = xForUnit(segment.endUnits) - 2;
+      if (right - left < 4) continue;
+      // A crescendo opens from nothing to full; a decrescendo closes.
+      double opening(double fraction) =>
+          _hairpinOpening *
+          (segment.kind == Hairpin.crescendo ? fraction : 1 - fraction);
+      final openLeft = opening(segment.startFraction);
+      final openRight = opening(segment.endFraction);
+      canvas.drawPath(
+        Path()
+          ..moveTo(right, middle - openRight)
+          ..lineTo(left, middle - openLeft)
+          ..moveTo(right, middle + openRight)
+          ..lineTo(left, middle + openLeft),
+        paint,
       );
     }
   }
@@ -378,9 +588,17 @@ class _StaffPainter extends CustomPainter {
   // (no glyphs to lay out) stays smooth.
   static final Map<String, TextPainter> _glyphCache = {};
 
-  static const Color _ink = Colors.black87;
+  Color get _ink => palette.ink;
 
-  static TextPainter _cachedGlyphPainter(String glyph, double fontSize, {Color color = _ink}) {
+  /// The colour glyphs are laid out in when only their size is wanted: the
+  /// size is the same in any colour.
+  static const Color _measuringColor = Colors.black;
+
+  static TextPainter _cachedGlyphPainter(
+    String glyph,
+    double fontSize, {
+    Color color = _measuringColor,
+  }) {
     final key = '$glyph@$fontSize@${color.toARGB32()}';
     return _glyphCache.putIfAbsent(key, () {
       return TextPainter(
@@ -399,11 +617,89 @@ class _StaffPainter extends CustomPainter {
     double x,
     double baselineY,
     double fontSize, {
-    Color color = _ink,
+    Color? color,
   }) {
-    final textPainter = _cachedGlyphPainter(glyph, fontSize, color: color);
+    final textPainter = _cachedGlyphPainter(glyph, fontSize, color: color ?? _ink);
     final baselineOffset = textPainter.computeDistanceToActualBaseline(TextBaseline.alphabetic);
     textPainter.paint(canvas, Offset(x, baselineY - baselineOffset));
+  }
+
+  /// Draws a roll's [count] slashes across the stem of the note whose left
+  /// edge is at [noteX], stacked upward from just above its notehead (below
+  /// where beams and flags are).
+  void _paintRollSlashes(Canvas canvas, int count, double noteX, double c5Y, Color color) {
+    const halfWidth = _lineSpacing * 0.55;
+    const rise = _lineSpacing * 0.3;
+    const thickness = _lineSpacing * 0.28;
+    final stemX = noteX + _stemRight - _stemThickness / 2;
+    final paint = Paint()..color = color;
+    for (var i = 0; i < count; i++) {
+      final y = c5Y - _lineSpacing * (1.15 + 0.5 * i);
+      canvas.drawPath(
+        Path()
+          ..moveTo(stemX - halfWidth, y + rise / 2)
+          ..lineTo(stemX + halfWidth, y - rise / 2)
+          ..lineTo(stemX + halfWidth, y - rise / 2 + thickness)
+          ..lineTo(stemX - halfWidth, y + rise / 2 + thickness)
+          ..close(),
+        paint,
+      );
+    }
+  }
+
+  /// Draws the [count] grace notes of a flam (1) or drag (2) just left of
+  /// the note whose left edge is at [noteX], on the same line as it, with a
+  /// slur joining them to it. They take no time, so unlike everything else
+  /// they aren't placed by the time-to-position formula: they sit in the
+  /// space before their note.
+  void _paintGraceNotes(Canvas canvas, int count, double noteX, double c5Y, Color color) {
+    if (count == 0) return;
+    final firstX = noteX - count * _graceGap - _lineSpacing * 0.2;
+    if (count == 1) {
+      _paintGlyph(canvas, _graceNoteSlashed, firstX, c5Y, _fontSize, color: color);
+    } else {
+      // Two small notes under a double beam, drawn as beamed notes are.
+      const stemRight = _stemRight * _graceScale;
+      const stemThickness = _stemThickness * _graceScale;
+      const beamThickness = _beamThickness * _graceScale;
+      final top = c5Y - _stemHeight * _graceScale;
+      final paint = Paint()..color = color;
+      for (var i = 0; i < count; i++) {
+        _paintGlyph(
+          canvas,
+          _beamedNoteGlyph,
+          firstX + i * _graceGap,
+          c5Y,
+          _fontSize * _graceScale,
+          color: color,
+        );
+      }
+      for (var beam = 0; beam < 2; beam++) {
+        final y = top + beam * (beamThickness + _beamGap * _graceScale);
+        canvas.drawRect(
+          Rect.fromLTRB(
+            firstX + stemRight - stemThickness,
+            y,
+            firstX + (count - 1) * _graceGap + stemRight,
+            y + beamThickness,
+          ),
+          paint,
+        );
+      }
+    }
+
+    // The slur, under the noteheads from the first grace note to the note.
+    final start = Offset(firstX + _noteheadWidth * _graceScale / 2, c5Y + _lineSpacing * 0.55);
+    final end = Offset(noteX + _noteheadWidth / 2, c5Y + _lineSpacing * 0.75);
+    canvas.drawPath(
+      Path()
+        ..moveTo(start.dx, start.dy)
+        ..quadraticBezierTo((start.dx + end.dx) / 2, end.dy + _lineSpacing * 0.7, end.dx, end.dy),
+      Paint()
+        ..color = color
+        ..strokeWidth = 1
+        ..style = PaintingStyle.stroke,
+    );
   }
 
   /// Draws [meter]'s two numbers stacked in the staff, starting at [left],
@@ -416,8 +712,7 @@ class _StaffPainter extends CustomPainter {
 
   static double _timeSignatureWidth(TimeSignature meter) {
     final topWidth = _cachedGlyphPainter(_timeSignatureDigits(meter.beats), _fontSize).width;
-    final bottomWidth =
-        _cachedGlyphPainter(_timeSignatureDigits(meter.beatUnit), _fontSize).width;
+    final bottomWidth = _cachedGlyphPainter(_timeSignatureDigits(meter.beatUnit), _fontSize).width;
     return topWidth > bottomWidth ? topWidth : bottomWidth;
   }
 
@@ -427,10 +722,89 @@ class _StaffPainter extends CustomPainter {
     final topWidth = _cachedGlyphPainter(top, _fontSize).width;
     final bottomWidth = _cachedGlyphPainter(bottom, _fontSize).width;
     final width = _timeSignatureWidth(meter);
-    _paintGlyph(canvas, top, left + (width - topWidth) / 2, staffBottom - 3 * _lineSpacing, _fontSize);
     _paintGlyph(
-        canvas, bottom, left + (width - bottomWidth) / 2, staffBottom - _lineSpacing, _fontSize);
+      canvas,
+      top,
+      left + (width - topWidth) / 2,
+      staffBottom - 3 * _lineSpacing,
+      _fontSize,
+    );
+    _paintGlyph(
+      canvas,
+      bottom,
+      left + (width - bottomWidth) / 2,
+      staffBottom - _lineSpacing,
+      _fontSize,
+    );
     return width;
+  }
+
+  /// Draws the beams of one group of notes whose left edges are at [noteXs]:
+  /// one beam across all of them at [top] (the top of their stems), and a
+  /// second one under it wherever [beamCounts] says 2 -- across sixteenths
+  /// next to each other, or as a short stub on a sixteenth with none beside
+  /// it. Each note's half of a beam is in that note's colour ([colors]), so
+  /// a note coloured by its judgement is coloured all the way up.
+  void _paintBeams(
+    Canvas canvas,
+    List<double> noteXs,
+    List<int> beamCounts,
+    List<Color> colors,
+    double top,
+  ) {
+    double stemLeft(int i) => noteXs[i] + _stemRight - _stemThickness;
+    double stemRight(int i) => noteXs[i] + _stemRight;
+
+    // A beam from note [first] to note [last], changing colour halfway
+    // between each two notes.
+    void span(int first, int last, double y) {
+      for (var i = first; i <= last; i++) {
+        final left = i == first ? stemLeft(i) : (stemRight(i - 1) + stemLeft(i)) / 2;
+        final right = i == last ? stemRight(i) : (stemRight(i) + stemLeft(i + 1)) / 2;
+        canvas.drawRect(
+          Rect.fromLTRB(left, y, right, y + _beamThickness),
+          Paint()..color = colors[i],
+        );
+      }
+    }
+
+    final last = noteXs.length - 1;
+    span(0, last, top);
+
+    final secondY = top + _beamThickness + _beamGap;
+    var i = 0;
+    while (i <= last) {
+      if (beamCounts[i] < 2) {
+        i++;
+        continue;
+      }
+      var runEnd = i;
+      while (runEnd < last && beamCounts[runEnd + 1] >= 2) {
+        runEnd++;
+      }
+      if (runEnd > i) {
+        span(i, runEnd, secondY);
+      } else {
+        // Toward the note before it, or -- for the first note of the group
+        // -- toward the one after; never more than halfway there.
+        final pointsRight = i == 0;
+        final neighbour = pointsRight ? stemLeft(i + 1) : stemRight(i - 1);
+        final reach = pointsRight ? neighbour - stemRight(i) : stemLeft(i) - neighbour;
+        final length = reach / 2 < _beamStubLength ? reach / 2 : _beamStubLength;
+        canvas.drawRect(
+          pointsRight
+              ? Rect.fromLTRB(stemLeft(i), secondY, stemRight(i) + length, secondY + _beamThickness)
+              : Rect.fromLTRB(
+                  stemLeft(i) - length,
+                  secondY,
+                  stemRight(i),
+                  secondY + _beamThickness,
+                ),
+          Paint()..color = colors[i],
+        );
+      }
+      i = runEnd + 1;
+    }
   }
 
   /// Draws a triplet's "3" centered over [left]..[right] at height [y], with
@@ -451,7 +825,7 @@ class _StaffPainter extends CustomPainter {
     if (bracketInnerLeft <= left || bracketInnerRight >= right) return;
 
     final bracketPaint = Paint()
-      ..color = Colors.black87
+      ..color = _ink
       ..strokeWidth = 1
       ..style = PaintingStyle.stroke;
     canvas.drawPath(
@@ -468,11 +842,13 @@ class _StaffPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_StaffPainter oldDelegate) =>
+      oldDelegate.palette != palette ||
       oldDelegate.measure != measure ||
       oldDelegate.showTimeSignature != showTimeSignature ||
       oldDelegate.playheadUnits != playheadUnits ||
       oldDelegate.showCursor != showCursor ||
       oldDelegate.marks != marks ||
       oldDelegate.selectedEventIndex != selectedEventIndex ||
-      oldDelegate.eventColors != eventColors;
+      oldDelegate.eventColors != eventColors ||
+      oldDelegate.hairpins != hairpins;
 }

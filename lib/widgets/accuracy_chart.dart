@@ -2,11 +2,25 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../models/rhythm_score.dart';
 import '../services/practice_history.dart';
 
 /// "Oct 7".
 String shortDate(DateTime day) {
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
   return '${months[day.month - 1]} ${day.day}';
 }
 
@@ -33,11 +47,15 @@ class DailyAccuracy {
   /// One per day practised, oldest first. Runs with nothing judged (no
   /// accuracy) are left out.
   static List<DailyAccuracy> fromRuns(Iterable<PracticeRun> runs) => [
-        for (final MapEntry(key: day, value: dayRuns) in _runsByDay(runs).entries)
-          if ([for (final run in dayRuns) ?run.accuracy] case final accuracies
-              when accuracies.isNotEmpty)
-            DailyAccuracy(day, accuracies.reduce((a, b) => a + b) / accuracies.length, accuracies.length),
-      ];
+    for (final MapEntry(key: day, value: dayRuns) in _runsByDay(runs).entries)
+      if ([for (final run in dayRuns) ?run.accuracy] case final accuracies
+          when accuracies.isNotEmpty)
+        DailyAccuracy(
+          day,
+          accuracies.reduce((a, b) => a + b) / accuracies.length,
+          accuracies.length,
+        ),
+  ];
 }
 
 /// One day's point on [TempoByDayChart]: the tempos played that day.
@@ -53,16 +71,23 @@ class DailyTempo {
   const DailyTempo(this.day, this.topBpm, this.slowestBpm, this.runCount);
 
   /// One per day practised, oldest first; every run counts, whatever tempo
-  /// it was played at.
-  static List<DailyTempo> fromRuns(Iterable<PracticeRun> runs) => [
-        for (final MapEntry(key: day, value: dayRuns) in _runsByDay(runs).entries)
-          DailyTempo(
-            day,
-            dayRuns.map((run) => run.tempoBpm).reduce(math.max),
-            dayRuns.map((run) => run.tempoBpm).reduce(math.min),
-            dayRuns.length,
-          ),
-      ];
+  /// it was played at. Tempos are counted in [beat] notes, so runs played
+  /// while the track's BPM counted a different note still compare.
+  static List<DailyTempo> fromRuns(
+    Iterable<PracticeRun> runs, {
+    TempoBeat beat = TempoBeat.quarter,
+  }) {
+    int bpm(PracticeRun run) => beat.convert(run.tempoBpm, run.tempoBeat).round();
+    return [
+      for (final MapEntry(key: day, value: dayRuns) in _runsByDay(runs).entries)
+        DailyTempo(
+          day,
+          dayRuns.map(bpm).reduce(math.max),
+          dayRuns.map(bpm).reduce(math.min),
+          dayRuns.length,
+        ),
+    ];
+  }
 }
 
 /// A line chart of average accuracy per practice day, on a fixed 0-100%
@@ -271,17 +296,26 @@ class _DailyLineChartPainter extends CustomPainter {
     required this.textStyle,
   });
 
-  void _text(Canvas canvas, String text, Offset anchor,
-      {Color? color, bool alignRight = false, bool center = false}) {
+  void _text(
+    Canvas canvas,
+    String text,
+    Offset anchor, {
+    Color? color,
+    bool alignRight = false,
+    bool center = false,
+  }) {
     final painter = TextPainter(
-      text: TextSpan(text: text, style: textStyle.copyWith(color: color ?? mutedInk)),
+      text: TextSpan(
+        text: text,
+        style: textStyle.copyWith(color: color ?? mutedInk),
+      ),
       textDirection: TextDirection.ltr,
     )..layout();
     final dx = alignRight
         ? anchor.dx - painter.width
         : center
-            ? anchor.dx - painter.width / 2
-            : anchor.dx;
+        ? anchor.dx - painter.width / 2
+        : anchor.dx;
     painter.paint(canvas, Offset(dx, anchor.dy - painter.height / 2));
   }
 
@@ -322,12 +356,17 @@ class _DailyLineChartPainter extends CustomPainter {
     // room), so they never collide.
     final labelled = <int>{0, points.length - 1, if (points.length >= 5) points.length ~/ 2};
     for (final index in labelled) {
-      _text(canvas, shortDate(points[index].day),
-          Offset(g.xFor(index), size.height - _ChartGeometry.bottom / 2),
-          center: true);
+      _text(
+        canvas,
+        shortDate(points[index].day),
+        Offset(g.xFor(index), size.height - _ChartGeometry.bottom / 2),
+        center: true,
+      );
     }
 
-    final offsets = [for (var i = 0; i < points.length; i++) Offset(g.xFor(i), g.yFor(points[i].value))];
+    final offsets = [
+      for (var i = 0; i < points.length; i++) Offset(g.xFor(i), g.yFor(points[i].value)),
+    ];
     if (offsets.length > 1) {
       final path = Path()..moveTo(offsets.first.dx, offsets.first.dy);
       for (final point in offsets.skip(1)) {
@@ -349,14 +388,22 @@ class _DailyLineChartPainter extends CustomPainter {
     }
 
     // Direct label on the latest day only.
-    _text(canvas, chart.valueLabel(points.last.value), offsets.last + const Offset(0, -14),
-        color: ink, center: true);
+    _text(
+      canvas,
+      chart.valueLabel(points.last.value),
+      offsets.last + const Offset(0, -14),
+      color: ink,
+      center: true,
+    );
 
     final index = tapped;
     if (index != null && index < points.length) {
       final point = offsets[index];
       final painter = TextPainter(
-        text: TextSpan(text: chart.tooltip(index), style: textStyle.copyWith(color: surface)),
+        text: TextSpan(
+          text: chart.tooltip(index),
+          style: textStyle.copyWith(color: surface),
+        ),
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: size.width - 16);
       const padding = EdgeInsets.symmetric(horizontal: 8, vertical: 4);

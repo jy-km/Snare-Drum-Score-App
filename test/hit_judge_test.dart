@@ -156,11 +156,9 @@ void main() {
       }
       judged.addAll(judge.finish());
 
-      expect(
-        judged.map((j) => j.noteIndex).toList()..sort(),
-        [for (var i = 0; i < noteTimes.length; i++) i],
-        reason: 'trial $trial',
-      );
+      expect(judged.map((j) => j.noteIndex).toList()..sort(), [
+        for (var i = 0; i < noteTimes.length; i++) i,
+      ], reason: 'trial $trial');
       expect(judge.counts.values.reduce((a, b) => a + b), noteTimes.length);
     }
   });
@@ -244,6 +242,68 @@ void main() {
 
       expect(judge.addHit(0.5), isNull);
       expect(judge.addHit(3.5), isNull, reason: 'after the rest has ended');
+    });
+  });
+
+  group('Notes with grace strokes (flams and drags)', () {
+    test('A grace stroke before the note does not make the note early', () {
+      // A drag: a grace stroke heard 60ms ahead, then the note itself.
+      final judge = HitJudge([1.0, 2.0], graceNotes: {0});
+
+      expect(judge.addHit(0.94), isNull, reason: 'held: the note may still be coming');
+      final hit = judge.addHit(1.005)!;
+
+      expect(hit.noteIndex, 0);
+      expect(hit.judgement, Judgement.perfect);
+      expect(hit.offsetSeconds, closeTo(0.005, 1e-9));
+      expect(judge.counts[Judgement.perfect], 1);
+      expect(judge.counts[Judgement.great], 0);
+    });
+
+    test('Several grace strokes are all part of the one note', () {
+      final judge = HitJudge([1.0], rests: [(0.0, 1.0)], graceNotes: {0});
+
+      expect(judge.addHit(0.90), isNull);
+      expect(judge.addHit(0.95), isNull);
+      expect(judge.addHit(1.0)!.judgement, Judgement.perfect);
+      expect(judge.finish(), isEmpty);
+      expect(judge.counts[Judgement.fail], 0, reason: 'grace strokes in the rest before');
+      expect(judge.counts.values.reduce((a, b) => a + b), 1);
+    });
+
+    test('Heard as a single hit, the note is judged by that hit', () {
+      // A flam's two strokes usually reach the judge as one hit.
+      final onTime = HitJudge([1.0], graceNotes: {0});
+      expect(onTime.addHit(1.01)!.judgement, Judgement.perfect);
+
+      // An early one is held, then judged when the note's window closes.
+      final early = HitJudge([1.0, 2.0], graceNotes: {0});
+      expect(early.addHit(0.95), isNull);
+      expect(early.advanceTo(1.1), isEmpty, reason: 'window still open');
+      final settled = early.advanceTo(1.2).single;
+      expect(settled.noteIndex, 0);
+      expect(settled.judgement, Judgement.great);
+      expect(settled.offsetSeconds, closeTo(-0.05, 1e-9));
+    });
+
+    test('The closest hit wins when the note itself comes late', () {
+      final judge = HitJudge([1.0], graceNotes: {0});
+
+      expect(judge.addHit(0.98), isNull);
+      final hit = judge.addHit(1.07)!;
+
+      expect(hit.offsetSeconds, closeTo(-0.02, 1e-9));
+      expect(hit.judgement, Judgement.perfect);
+    });
+
+    test('A note with no hit at all is still a miss, and other notes are unaffected', () {
+      final judge = HitJudge([1.0, 2.0], graceNotes: {0});
+
+      // An early hit on a plain note is judged at once, as before.
+      final plain = judge.addHit(1.94)!;
+      expect(plain.noteIndex, 1);
+      expect(plain.judgement, Judgement.great);
+      expect(judge.finish().single.judgement, Judgement.miss);
     });
   });
 }

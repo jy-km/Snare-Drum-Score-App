@@ -109,6 +109,8 @@ void main() {
     expect(playheadIn(0), isNull);
     expect(playheadIn(1), closeTo(12, 1), reason: '5s in: beat 2 of measure 1');
 
+    // The replay has scrolled down to the measure playing.
+    await tester.ensureVisible(find.byKey(const Key('review_stop_button')));
     await tester.tap(find.byKey(const Key('review_stop_button')));
     await tester.pump();
     expect(playheadIn(1), isNull);
